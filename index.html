@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Tongue Flick: camera lick counter</title>
+    <meta name="description" content="Front-camera tongue flick counter with MediaPipe Face Landmarker and a reactive Three.js lollipop." />
+    <script type="importmap">
+      { "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.js" } }
+    </script>
+    <style>
+      :root { --fg: #fff; --accent: #ff5c8a; --panel: rgba(12, 14, 24, 0.72); }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; height: 100%; background: #0b0d16; color: var(--fg); font: 16px/1.4 system-ui, -apple-system, 'Segoe UI', sans-serif; overflow: hidden; }
+      video { position: fixed; inset: 0; width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); }
+      canvas#gl, canvas#overlay { position: fixed; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+      .hud { position: fixed; top: max(12px, env(safe-area-inset-top)); left: 16px; right: 16px; display: flex; justify-content: space-between; align-items: flex-start; pointer-events: none; }
+      #count { font-size: 64px; font-weight: 800; line-height: 1; text-shadow: 0 2px 12px #000a; }
+      #timer { font-size: 28px; font-variant-numeric: tabular-nums; text-shadow: 0 2px 8px #000a; }
+      #hint { position: fixed; left: 0; right: 0; top: 40%; text-align: center; font-size: 22px; font-weight: 600; text-shadow: 0 2px 10px #000c; pointer-events: none; }
+      .panel { position: fixed; inset: 0; display: none; place-items: center; background: rgba(8, 9, 16, 0.6); }
+      .card { background: var(--panel); padding: 24px; border-radius: 16px; max-width: 420px; margin: 16px; text-align: center; backdrop-filter: blur(6px); }
+      .card h1 { margin: 0 0 8px; font-size: 26px; }
+      .card p { margin: 0 0 16px; color: #d6d8e8; }
+      button { min-height: 44px; min-width: 44px; padding: 10px 18px; border: 0; border-radius: 999px; font: inherit; font-weight: 700; color: #fff; background: var(--accent); cursor: pointer; }
+      button.ghost { background: rgba(255, 255, 255, 0.14); }
+      body[data-state='menu'] #menu, body[data-state='results'] #results { display: grid; }
+      #final-score { font-size: 72px; font-weight: 800; }
+      .tools { position: fixed; right: 16px; bottom: max(16px, env(safe-area-inset-bottom)); display: flex; gap: 8px; }
+      #debug { position: fixed; left: 16px; bottom: max(16px, env(safe-area-inset-bottom)); display: none; background: var(--panel); border-radius: 12px; padding: 8px; max-width: calc(100% - 32px); }
+      body.debug #debug { display: block; }
+      #graph { display: block; width: 320px; max-width: 100%; height: 96px; }
+      #debug-text { font-size: 12px; color: #cfd3ea; margin-top: 4px; }
+      #sim-lick { display: none; position: fixed; left: 50%; transform: translateX(-50%); top: max(90px, env(safe-area-inset-top)); }
+      body.sim #sim-lick { display: block; }
+      #status { color: #ffd166; min-height: 1.4em; }
+      @media (max-width: 480px) { #graph { width: 100%; } }
+    </style>
+  </head>
+  <body data-state="menu">
+    <video id="video" playsinline muted></video>
+    <canvas id="gl"></canvas>
+    <canvas id="overlay"></canvas>
+
+    <div class="hud"><div id="count">0</div><div id="timer"></div></div>
+    <div id="hint"></div>
+
+    <section class="panel" id="menu">
+      <div class="card">
+        <h1>Tongue Flick</h1>
+        <p>Lick the lollipop as fast as you can for 20 seconds. Keep your tongue in for a moment first while it calibrates to your face and your light.</p>
+        <p id="status"></p>
+        <button id="start">Start camera</button>
+      </div>
+    </section>
+
+    <section class="panel" id="results">
+      <div class="card">
+        <p>Licks in 20 seconds</p>
+        <div id="final-score">0</div>
+        <button id="restart">Play again</button>
+      </div>
+    </section>
+
+    <button id="sim-lick" class="ghost">Hold = tongue out (or Space)</button>
+
+    <div id="debug">
+      <canvas id="graph" width="320" height="96"></canvas>
+      <div id="debug-text"></div>
+    </div>
+    <div class="tools">
+      <button id="mute" class="ghost">Sound on</button>
+      <button id="toggle-debug" class="ghost">Signal</button>
+    </div>
+
+    <script type="module" src="./src/main.js"></script>
+  </body>
+</html>

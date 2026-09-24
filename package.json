@@ -1,0 +1,6 @@
+{
+  "name": "tongue-flick-demo",
+  "private": true,
+  "type": "module",
+  "scripts": { "test": "node --test test/*.test.mjs", "serve": "node server.mjs" }
+}

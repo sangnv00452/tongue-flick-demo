@@ -1,0 +1,362 @@
+// Tongue Flick demo: front camera -> MediaPipe Face Landmarker -> tongue cues -> flick counter ->
+// a 3D lollipop that reacts. `?sim=1` runs without a camera (space / hold the button = tongue out),
+// which is also how the page is tested headlessly through the hooks at the bottom.
+import * as THREE from 'three';
+import { createFlickCounter } from './flick-counter.js';
+import { createLollipop } from './lollipop.js';
+import { extensionCue, headAngles, headFrame, lipChinCue, LM } from './tongue-signal.js';
+
+const MP_VERSION = '1.0.1';
+const MP_BASE = `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${MP_VERSION}`;
+const MODEL_URL = 'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task';
+
+const CONFIG = Object.freeze({
+  roundMs: 20_000,
+  sampleWidth: 320, // the camera frame is downscaled to this width for pixel sampling
+  simStepMs: 1000 / 30,
+  graphSeconds: 5,
+});
+
+const params = new URLSearchParams(location.search);
+const SIM = params.has('sim');
+
+const $ = (id) => document.getElementById(id);
+const ui = {
+  video: $('video'),
+  gl: $('gl'),
+  overlay: $('overlay'),
+  graph: $('graph'),
+  start: $('start'),
+  restart: $('restart'),
+  menu: $('menu'),
+  results: $('results'),
+  finalScore: $('final-score'),
+  count: $('count'),
+  timer: $('timer'),
+  hint: $('hint'),
+  debug: $('debug'),
+  debugText: $('debug-text'),
+  toggleDebug: $('toggle-debug'),
+  mute: $('mute'),
+  simButton: $('sim-lick'),
+  status: $('status'),
+};
+
+// ---------- game state machine: menu -> loading -> calibrating -> playing -> results -> (restart) calibrating
+const game = { state: 'menu', startedAt: 0, now: 0, remainingMs: CONFIG.roundMs, score: 0, faceFound: false, cueMode: 'none', error: null };
+const counter = createFlickCounter();
+let debugOn = params.has('debug') || SIM;
+let muted = false;
+
+function setState(next) {
+  game.state = next;
+  document.body.dataset.state = next;
+  if (next === 'calibrating') {
+    counter.reset();
+    lollipop.reset();
+    game.score = 0;
+    game.remainingMs = CONFIG.roundMs;
+  }
+  if (next === 'playing') game.startedAt = game.now;
+  if (next === 'results') ui.finalScore.textContent = String(game.score);
+  renderHud();
+}
+
+// ---------- three.js overlay
+const renderer = new THREE.WebGLRenderer({ canvas: ui.gl, alpha: true, antialias: true });
+renderer.setPixelRatio(Math.min(2, window.devicePixelRatio));
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(35, 1, 0.1, 100);
+camera.position.set(0, 0, 10);
+scene.add(new THREE.HemisphereLight(0xfff4e6, 0x404a66, 1.6));
+const key = new THREE.DirectionalLight(0xffffff, 2.2);
+key.position.set(2, 3, 5);
+scene.add(key);
+const lollipop = createLollipop();
+scene.add(lollipop.object);
+
+const view = { w: 1, h: 1 };
+function resize() {
+  view.w = window.innerWidth;
+  view.h = window.innerHeight;
+  renderer.setSize(view.w, view.h, false);
+  camera.aspect = view.w / view.h;
+  camera.updateProjectionMatrix();
+  ui.overlay.width = view.w;
+  ui.overlay.height = view.h;
+}
+window.addEventListener('resize', resize);
+resize();
+
+const worldPerPx = () => (2 * camera.position.z * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2))) / view.h;
+function placeLollipop(screen, faceScalePx) {
+  const k = worldPerPx();
+  const target = new THREE.Vector3((screen.x - view.w / 2) * k, -(screen.y - view.h / 2) * k, 0);
+  lollipop.object.position.lerp(target, 0.35);
+  const size = Math.max(0.3, faceScalePx * 0.42 * k);
+  lollipop.object.scale.setScalar(THREE.MathUtils.lerp(lollipop.object.scale.x, size, 0.3));
+}
+
+// ---------- audio (created on the first gesture)
+let audio = null;
+function pop() {
+  if (!audio || muted) return;
+  const t = audio.currentTime;
+  const o = audio.createOscillator();
+  const g = audio.createGain();
+  o.type = 'triangle';
+  o.frequency.setValueAtTime(520 + Math.min(game.score, 40) * 12, t);
+  o.frequency.exponentialRampToValueAtTime(180, t + 0.12);
+  g.gain.setValueAtTime(0.18, t);
+  g.gain.exponentialRampToValueAtTime(0.001, t + 0.14);
+  o.connect(g).connect(audio.destination);
+  o.start(t);
+  o.stop(t + 0.15);
+}
+
+// ---------- camera + face tracking
+let landmarker = null;
+const sampleCanvas = document.createElement('canvas');
+const sampleCtx = sampleCanvas.getContext('2d', { willReadFrequently: true });
+let lastVideoTime = -1;
+const head = { yaw: 0, pitch: 0, t: 0, angularVel: 0 };
+let lastFace = null; // { screenPts, frame } for drawing and placement
+
+async function startCamera() {
+  ui.status.textContent = 'Starting camera…';
+  const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } }, audio: false });
+  ui.video.srcObject = stream;
+  await ui.video.play();
+  ui.status.textContent = 'Loading face tracker…';
+  const { FaceLandmarker, FilesetResolver } = await import(`${MP_BASE}/vision_bundle.mjs`);
+  const fileset = await FilesetResolver.forVisionTasks(`${MP_BASE}/wasm`);
+  landmarker = await FaceLandmarker.createFromOptions(fileset, {
+    baseOptions: { modelAssetPath: MODEL_URL, delegate: 'GPU' },
+    runningMode: 'VIDEO',
+    numFaces: 1,
+    outputFaceBlendshapes: false,
+    outputFacialTransformationMatrixes: true,
+  });
+  ui.status.textContent = '';
+}
+
+/** Maps a normalized landmark to screen pixels for a mirrored, object-fit: cover video. */
+function toScreen(p) {
+  const vw = ui.video.videoWidth || 640;
+  const vh = ui.video.videoHeight || 480;
+  const s = Math.max(view.w / vw, view.h / vh);
+  return { x: (view.w - vw * s) / 2 + (1 - p.x) * vw * s, y: (view.h - vh * s) / 2 + p.y * vh * s };
+}
+
+function readCameraCues(t) {
+  const video = ui.video;
+  if (!landmarker || video.readyState < 2 || video.currentTime === lastVideoTime) return null;
+  lastVideoTime = video.currentTime;
+  const res = landmarker.detectForVideo(video, t);
+  const lms = res.faceLandmarks?.[0];
+  if (!lms) {
+    lastFace = null;
+    return { faceFound: false, cues: {}, angularVel: 0 };
+  }
+
+  const w = CONFIG.sampleWidth;
+  const h = Math.round((w * video.videoHeight) / video.videoWidth);
+  if (sampleCanvas.width !== w || sampleCanvas.height !== h) {
+    sampleCanvas.width = w;
+    sampleCanvas.height = h;
+  }
+  sampleCtx.drawImage(video, 0, 0, w, h);
+  const img = sampleCtx.getImageData(0, 0, w, h).data;
+  const sample = (x, y) => {
+    const i = (Math.min(h - 1, Math.max(0, Math.round(y))) * w + Math.min(w - 1, Math.max(0, Math.round(x)))) * 4;
+    return [img[i], img[i + 1], img[i + 2]];
+  };
+  const pts = lms.map((p) => ({ x: p.x * w, y: p.y * h }));
+  const extension = extensionCue(pts, sample);
+  const lipChin = lipChinCue(pts);
+  game.cueMode = extension === null ? 'lip only (too dark for colour)' : 'colour + lip';
+
+  const m = res.facialTransformationMatrixes?.[0]?.data;
+  if (m) {
+    const a = headAngles(m);
+    const dt = Math.max(1, t - head.t) / 1000;
+    const v = Math.hypot(a.yaw - head.yaw, a.pitch - head.pitch) / dt;
+    head.angularVel = head.t ? 0.6 * head.angularVel + 0.4 * v : 0;
+    Object.assign(head, a, { t });
+  }
+
+  const screenPts = lms.map(toScreen);
+  lastFace = { screenPts, frame: headFrame(screenPts) };
+  return { faceFound: true, cues: { extension, lipChin }, angularVel: head.angularVel };
+}
+
+// ---------- simulation input
+const sim = { tongueOut: false, headTurning: false };
+function readSimCues() {
+  game.cueMode = 'simulated';
+  const noise = (Math.random() - 0.5) * 0.02;
+  return { faceFound: true, cues: { extension: (sim.tongueOut ? 0.7 : 0) + noise, lipChin: -0.35 + noise * 0.1 }, angularVel: sim.headTurning ? 150 : 0 };
+}
+
+// ---------- per-frame step (shared by the real loop and advanceTime)
+const history = [];
+function step(t, dt) {
+  game.now = t;
+  const frame = game.state === 'calibrating' || game.state === 'playing' ? (SIM ? readSimCues() : readCameraCues(t)) : null;
+  if (frame) {
+    game.faceFound = frame.faceFound;
+    const r = counter.update({ t, cues: frame.cues, angularVel: frame.angularVel, faceFound: frame.faceFound });
+    history.push({ t, z: r.signal, flick: r.flick, gated: r.gated });
+    while (history.length && history[0].t < t - CONFIG.graphSeconds * 1000) history.shift();
+    if (game.state === 'calibrating' && r.state === 'in') setState('playing');
+    if (game.state === 'playing' && r.flick) {
+      game.score += 1;
+      lollipop.lick();
+      pop();
+    }
+  }
+  if (game.state === 'playing') {
+    game.remainingMs = Math.max(0, CONFIG.roundMs - (t - game.startedAt));
+    if (game.remainingMs === 0) setState('results');
+  }
+
+  if (lastFace && !SIM) {
+    const { screenPts, frame: f } = lastFace;
+    const lip = screenPts[LM.lowerOuter];
+    placeLollipop({ x: lip.x + f.down.x * f.scale * 0.9, y: lip.y + f.down.y * f.scale * 0.9 }, f.scale);
+  } else placeLollipop({ x: view.w / 2, y: view.h * 0.62 }, Math.min(view.w, view.h) * 0.35);
+  lollipop.update(dt / 1000);
+}
+
+// ---------- drawing
+function renderHud() {
+  ui.count.textContent = String(game.score);
+  ui.timer.textContent = game.state === 'playing' ? (game.remainingMs / 1000).toFixed(1) : '';
+  const snap = counter.snapshot();
+  ui.hint.textContent =
+    game.state === 'calibrating'
+      ? game.faceFound
+        ? `Keep your tongue in… ${Math.round(snap.calibration * 100)}%`
+        : 'Face the camera'
+      : game.state === 'playing' && !game.faceFound
+        ? 'Face lost: counting paused'
+        : '';
+}
+
+function drawOverlay() {
+  const g = ui.overlay.getContext('2d');
+  g.clearRect(0, 0, view.w, view.h);
+  if (!debugOn || !lastFace) return;
+  const { screenPts, frame: f } = lastFace;
+  g.fillStyle = 'rgba(0,255,200,0.9)';
+  for (const i of [LM.eyeOuterR, LM.eyeOuterL, LM.upperInner, LM.lowerInner, LM.lowerOuter, LM.chin, LM.cheekR, LM.cheekL]) {
+    g.fillRect(screenPts[i].x - 2, screenPts[i].y - 2, 4, 4);
+  }
+  const a = screenPts[LM.lowerInner];
+  const reach = Math.hypot(screenPts[LM.chin].x - a.x, screenPts[LM.chin].y - a.y) * 0.9;
+  g.strokeStyle = 'rgba(255,80,120,0.9)';
+  g.lineWidth = 2;
+  g.beginPath();
+  g.moveTo(a.x, a.y);
+  g.lineTo(a.x + f.down.x * reach, a.y + f.down.y * reach);
+  g.stroke();
+}
+
+function drawGraph() {
+  const c = ui.graph;
+  const g = c.getContext('2d');
+  const { onZ, offZ } = counter.config;
+  const maxZ = 10;
+  g.clearRect(0, 0, c.width, c.height);
+  const y = (z) => c.height - (Math.max(-1, Math.min(maxZ, z)) + 1) * (c.height / (maxZ + 1));
+  for (const [z, col] of [[onZ, '#ff5c8a'], [offZ, '#ffd166']]) {
+    g.strokeStyle = col;
+    g.setLineDash([4, 4]);
+    g.beginPath();
+    g.moveTo(0, y(z));
+    g.lineTo(c.width, y(z));
+    g.stroke();
+  }
+  g.setLineDash([]);
+  const t0 = game.now - CONFIG.graphSeconds * 1000;
+  const x = (t) => ((t - t0) / (CONFIG.graphSeconds * 1000)) * c.width;
+  g.strokeStyle = '#7df9ff';
+  g.lineWidth = 2;
+  g.beginPath();
+  history.forEach((h, i) => (i ? g.lineTo(x(h.t), y(h.z)) : g.moveTo(x(h.t), y(h.z))));
+  g.stroke();
+  g.fillStyle = '#fff';
+  for (const h of history) if (h.flick) g.fillRect(x(h.t) - 1, 0, 2, c.height);
+  g.fillStyle = 'rgba(255,160,0,0.25)';
+  for (const h of history) if (h.gated) g.fillRect(x(h.t) - 1, c.height - 6, 3, 6);
+
+  const s = counter.snapshot();
+  ui.debugText.textContent = `state ${s.state} · z ${s.signal.toFixed(1)} (on ${onZ} / off ${offZ}) · ${s.gated ? 'HEAD MOVING: paused' : `head ${Math.round(head.angularVel)}°/s`} · cues: ${game.cueMode}`;
+}
+
+// ---------- main loop
+let lastT = null;
+let manualClock = false; // set once advanceTime() drives the game, for deterministic tests
+function frame(now) {
+  if (!manualClock) {
+    const dt = lastT === null ? 0 : Math.min(100, now - lastT);
+    lastT = now;
+    step(now, dt);
+  }
+  renderHud();
+  drawOverlay();
+  if (debugOn) drawGraph();
+  renderer.render(scene, camera);
+  requestAnimationFrame(frame);
+}
+
+// ---------- input
+async function begin() {
+  try {
+    audio ??= new AudioContext();
+    setState('loading');
+    if (!SIM) await startCamera();
+    setState('calibrating');
+  } catch (err) {
+    game.error = err instanceof Error ? err.message : String(err);
+    ui.status.textContent = `Could not start: ${game.error}. Try ?sim=1 to play without a camera.`;
+    setState('menu');
+  }
+}
+ui.start.addEventListener('click', begin);
+ui.restart.addEventListener('click', () => setState('calibrating'));
+ui.toggleDebug.addEventListener('click', () => {
+  debugOn = !debugOn;
+  document.body.classList.toggle('debug', debugOn);
+});
+ui.mute.addEventListener('click', () => {
+  muted = !muted;
+  ui.mute.textContent = muted ? 'Sound off' : 'Sound on';
+});
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) audio?.suspend();
+  else audio?.resume();
+});
+if (SIM) {
+  const set = (v) => () => (sim.tongueOut = v);
+  window.addEventListener('keydown', (e) => e.code === 'Space' && !e.repeat && set(true)());
+  window.addEventListener('keyup', (e) => e.code === 'Space' && set(false)());
+  ui.simButton.addEventListener('pointerdown', set(true));
+  ui.simButton.addEventListener('pointerup', set(false));
+  ui.simButton.addEventListener('pointerleave', set(false));
+  document.body.classList.add('sim');
+}
+document.body.classList.toggle('debug', debugOn);
+setState('menu');
+requestAnimationFrame(frame);
+
+// ---------- test hooks (see README): deterministic stepping and a text view of the state
+window.render_game_to_text = () =>
+  JSON.stringify({ state: game.state, score: game.score, remainingMs: Math.round(game.remainingMs), counter: counter.snapshot(), lollipop: lollipop.state(), sim: SIM, faceFound: game.faceFound });
+window.advanceTime = (ms) => {
+  manualClock = true;
+  for (let t = 0; t < ms; t += CONFIG.simStepMs) step(game.now + CONFIG.simStepMs, CONFIG.simStepMs);
+  return window.render_game_to_text();
+};
+window.__sim = sim;
+window.__GAME_READY__ = true;
