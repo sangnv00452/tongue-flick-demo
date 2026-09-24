@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { createTongueTracker, headAngles, headFrame, LM, toLocal } from '../src/tongue-signal.js';
+import { chroma, createTongueTracker, headAngles, headFrame, isTongueColour, LM, SIGNAL_DEFAULTS, toLocal } from '../src/tongue-signal.js';
 
 // A frontal face in pixel coordinates: eyes 100 px apart, lower lip 60 px above the chin.
 // `jaw` opens the mouth: lower lip and chin move down together; `lipOnTongue` is how far the tracker
@@ -34,7 +34,7 @@ function face({ jaw = 0, lipOnTongue = 0, rotateDeg = 0 } = {}) {
  * Skin, red lips, a dark mouth opening when the jaw is open, and optionally a tongue: `tongueInside`
  * paints it inside the open mouth only; `tongueTo` paints it hanging over the lower lip down to that y.
  */
-function image({ jaw = 0, tongueTo = 0, tongueInside = false, light = [1, 1, 1], rotateDeg = 0 } = {}) {
+function image({ jaw = 0, tongueTo = 0, tongueInside = false, light = [1, 1, 1], rotateDeg = 0, SKIN = [164, 120, 101], LIP = [139, 106, 96], TONGUE = [132, 93, 100], TONGUE_SHADE = [66, 46, 50], CAVITY = [40, 20, 20] } = {}) {
   const a = (-rotateDeg * Math.PI) / 180;
   return (x, y) => {
     const dx = x - 150;
@@ -42,11 +42,11 @@ function image({ jaw = 0, tongueTo = 0, tongueInside = false, light = [1, 1, 1],
     const fx = 150 + dx * Math.cos(a) - dy * Math.sin(a);
     const fy = 160 + dx * Math.sin(a) + dy * Math.cos(a);
     const mid = Math.abs(fx - 150);
-    let c = [200, 150, 130];
-    if (fy >= 194 && fy <= 202 && mid < 28) c = [190, 90, 90]; // upper lip
-    if (jaw && fy > 202 && fy < 203 + jaw && mid < 26) c = tongueInside ? [110, 50, 55] : [40, 20, 20]; // open mouth (a tongue at rest in it is in shade)
-    if (fy >= 203 + jaw && fy <= 222 + jaw && mid < 30) c = [190, 90, 90]; // lower lip
-    if (tongueTo && fy >= 203 && fy <= tongueTo + jaw && mid < 22) c = [205, 95, 105]; // tongue out, over the lips
+    let c = SKIN;
+    if (fy >= 194 && fy <= 202 && mid < 28) c = LIP; // upper lip
+    if (jaw && fy > 202 && fy < 203 + jaw && mid < 26) c = tongueInside ? TONGUE_SHADE : CAVITY; // open mouth (a tongue at rest in it is in shade)
+    if (fy >= 203 + jaw && fy <= 222 + jaw && mid < 30) c = LIP; // lower lip
+    if (tongueTo && fy >= 203 && fy <= tongueTo + jaw && mid < 22) c = TONGUE; // tongue out, over the lips
     return c.map((v, i) => Math.min(255, v * light[i]));
   };
 }
@@ -150,6 +150,22 @@ test('every sample is reported for drawing, labelled by what it saw', () => {
   assert.equal(m.samples.length, 28);
   assert.ok(m.samples.some((s) => s.kind === 'tongue'));
   assert.equal(m.region.length, 4);
+});
+
+test('pixels measured on a real phone (warm light, tan skin): tongue yes; lips, skin, teeth no', () => {
+  // Small-patch averages from frozen screenshots of the owner's iPhone 11 Pro front camera.
+  const cheeks = [chroma([164, 120, 101]), chroma([133, 89, 69])];
+  const skin = { r: (cheeks[0].r + cheeks[1].r) / 2, g: (cheeks[0].g + cheeks[1].g) / 2, b: (cheeks[0].b + cheeks[1].b) / 2, luma: (cheeks[0].luma + cheeks[1].luma) / 2 };
+  const tongue = [[132, 93, 100], [126, 93, 99], [150, 115, 109], [99, 72, 74], [144, 116, 120], [130, 92, 100], [127, 91, 94]];
+  const notTongue = { upperLip: [139, 106, 96], lowerLip: [163, 121, 104], cheek: [164, 120, 101], teeth: [205, 195, 190], cavity: [40, 25, 25] };
+  for (const px of tongue) assert.ok(isTongueColour(chroma(px), skin, SIGNAL_DEFAULTS), `tongue ${px}`);
+  for (const [name, px] of Object.entries(notTongue)) assert.ok(!isTongueColour(chroma(px), skin, SIGNAL_DEFAULTS), `${name} ${px}`);
+});
+
+test('teeth showing in the gap do not read as tongue', () => {
+  const t = calibratedTracker();
+  const r = rise(t, face({ jaw: 12 }), image({ jaw: 12, CAVITY: [205, 195, 190] }));
+  assert.ok(r < OFF, `rise ${r.toFixed(3)}`);
 });
 
 test('head angles come out of the transformation matrix', () => {

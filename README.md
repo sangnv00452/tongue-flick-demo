@@ -15,7 +15,10 @@ MediaPipe's face blendshapes have **no tongue output**, so the tongue is measure
 Licking only needs the tongue to come out over the lips, and colour alone can't tell a tongue from the lips (both are redder than skin). Two cues can:
 
 1. **Mouth fill (main cue).** Sample a 4×7 grid in the gap between the inner lips, corner to corner, and measure the share that is a **lit, tongue-coloured** surface.
-   - Tongue-coloured = redder and less green than the **cheeks in the same frame** (chromaticity, so warm or dim light cancels out) and not much darker than them.
+   - Tongue-coloured is tuned on real phone frames (warm light, tan skin). The tongue is pink-grey: blue about as strong as green. Skin and lips are warm: blue clearly below green. By plain redness the tongue is *less* red than tan cheeks, so the test is:
+     - **pinker than the cheeks in the same frame**: chromaticity b−g at least 0.035 above theirs, so warm or dim light cancels out;
+     - still reddish (r−g ≥ 0.05), which rules out white teeth;
+     - not much darker than the cheeks.
    - Closed lips: no gap, so the cue is 0 however red the lips are.
    - Mouth open with no tongue: a dark cavity or white teeth, so 0.
    - Tongue resting in the mouth: in shade, so 0.
@@ -38,7 +41,7 @@ A dent at the contact point that springs back, a damped wobble, a clearcoat "wet
 
 ## Tests
 
-`npm test` runs 25 tests:
+`npm test` runs 27 tests:
 
 - fast trains (4 flicks/s, also at 10 fps), slow licks, a held tongue;
 - hovering near the threshold, single-frame spikes;
@@ -51,4 +54,4 @@ The page also exposes `render_game_to_text()` and `advanceTime(ms)` for determin
 ## Limits
 
 - Tuned against synthetic signals and sim mode; the thresholds still need a pass on real iPhones in bright, dim and dark rooms.
-- The mouth-fill cue assumes the tongue is redder than the cheeks, which holds for most people and light but not all; the lip-drag cue is the fallback.
+- The colour thresholds come from one person and one phone (iPhone 11 Pro, warm indoor light). Other skin tones and light need their own frames checked; the lip-drag cue is the fallback.

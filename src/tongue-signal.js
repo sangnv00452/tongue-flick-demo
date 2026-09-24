@@ -1,15 +1,15 @@
 // Tells whether the tongue is out, from face landmarks plus the camera frame.
 // MediaPipe's face blendshapes have no tongue output (tasks-vision has no `tongueOut`), so the tongue
-// is found directly. Licking only needs the tongue to come out over the lips, and colour alone cannot
-// separate a tongue from the lips (both are redder than skin). What does separate them:
+// is found directly. Licking only needs the tongue to come out over the lips. Two cues:
 //   1. Mouth fill (main cue): the lips part and the gap between them fills with a lit, tongue-coloured
 //      surface. Closed lips have no gap; an open mouth without the tongue is a dark cavity or white
 //      teeth; a tongue resting inside the mouth is in shade. Only a tongue coming out fills the gap.
 //   2. Lip drag (second cue): the tracker pushes the lower-lip landmarks onto a protruding tongue.
 //      Measured against where the lower lip sat during calibration relative to the chin (lip and chin
 //      both ride on the jaw), so opening the mouth leaves it at zero.
-// Colour is judged as chromaticity against the cheeks in the same frame, so warm or dim light shifts
-// both sides and cancels out. Pure: points are pixel coordinates, pixels come from a sampler callback.
+// Colour is judged as chromaticity against the cheeks in the same frame (see isTongueColour), so warm
+// or dim light shifts both sides and cancels out. Pure: points are pixel coordinates, pixels come from
+// a sampler callback.
 
 export const LM = Object.freeze({
   forehead: 10,
@@ -53,10 +53,21 @@ export function fromLocal(u, v, origin, f) {
   return { x: origin.x + (f.right.x * u + f.down.x * v) * f.scale, y: origin.y + (f.right.y * u + f.down.y * v) * f.scale };
 }
 
-/** Chromaticity is brightness-independent: r/(r+g+b), g/(r+g+b), plus luma for a darkness floor. */
+/** Chromaticity is brightness-independent: r/(r+g+b), g/(r+g+b), b/(r+g+b), plus luma for a darkness floor. */
 export function chroma([r, g, b]) {
   const sum = r + g + b || 1;
-  return { r: r / sum, g: g / sum, luma: (0.299 * r + 0.587 * g + 0.114 * b) / 255 };
+  return { r: r / sum, g: g / sum, b: b / sum, luma: (0.299 * r + 0.587 * g + 0.114 * b) / 255 };
+}
+
+/**
+ * Tongue colour, measured on a real phone (warm light, tan skin): the tongue is pink-grey, blue about
+ * as strong as green (b-g ~ 0), while skin and lips are warm, blue clearly below green (b-g -0.03 to
+ * -0.07). By plain redness the tongue is *less* red than tan cheeks, so redness is the wrong test.
+ * So: pinker than the cheeks in the same frame (b-g higher by a margin), still reddish (r-g, which
+ * rules out white or grey teeth), and lit (rules out the mouth cavity).
+ */
+export function isTongueColour(px, skin, o) {
+  return px.luma >= o.minRelLuma * skin.luma && px.r - px.g >= o.minRedOverGreen && px.b - px.g - (skin.b - skin.g) >= o.pinkerThanSkin;
 }
 
 export const SIGNAL_DEFAULTS = Object.freeze({
@@ -64,8 +75,8 @@ export const SIGNAL_DEFAULTS = Object.freeze({
   cols: 7, // samples along it, corner to corner
   inset: 0.15, // keep this share of the gap and the width clear at each edge (lip edges are red too)
   minGap: 0.04, // lips closer than this (in eye spans) are closed: nothing can be in between
-  redDelta: 0.02, // tongue must be this much redder than cheek skin (chromaticity)
-  greenDelta: -0.01, // and this much less green
+  pinkerThanSkin: 0.035, // tongue b-g must exceed the cheeks' b-g by this (lips +0.02-0.03, tongue +0.04-0.09 measured)
+  minRedOverGreen: 0.05, // and r-g at least this (tongue +0.07-0.12, teeth ~+0.02)
   lumaFloor: 0.07, // darker pixels are sensor noise, not colour
   minRelLuma: 0.5, // and at least this bright relative to the cheeks (rules out the mouth cavity)
   minValidRatio: 0.5, // below this share of usable samples the cue reports unknown
@@ -73,7 +84,7 @@ export const SIGNAL_DEFAULTS = Object.freeze({
 
 function averageChroma(samples) {
   const n = samples.length || 1;
-  return samples.reduce((acc, c) => ({ r: acc.r + c.r / n, g: acc.g + c.g / n, luma: acc.luma + c.luma / n }), { r: 0, g: 0, luma: 0 });
+  return samples.reduce((acc, c) => ({ r: acc.r + c.r / n, g: acc.g + c.g / n, b: acc.b + c.b / n, luma: acc.luma + c.luma / n }), { r: 0, g: 0, b: 0, luma: 0 });
 }
 
 /** Cheek colour in this frame: the reference the mouth is compared against. */
@@ -147,7 +158,7 @@ export function createTongueTracker(options = {}) {
           if (px.luma >= o.lumaFloor) {
             usable++;
             const lit = px.luma >= o.minRelLuma * skin.luma;
-            const isTongue = lit && px.r - skin.r >= o.redDelta && px.g - skin.g <= o.greenDelta;
+            const isTongue = isTongueColour(px, skin, o);
             kind = isTongue ? 'tongue' : lit ? 'skin' : 'shadow';
             if (isTongue) tongue++;
           }
