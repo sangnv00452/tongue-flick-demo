@@ -35,11 +35,13 @@ Licking only needs the tongue to come out over the lips, and colour alone can't 
    - a **motion gate**: head rotation faster than 250°/s (from the facial transformation matrix) freezes counting, so head bobs don't score;
    - the baseline drifts slowly while the tongue is in, following lighting changes during play.
 
-## Reaching the candy
+## Touching the candy
 
-The candy stays still; the player brings their mouth to it. A lick only scores when the centre of the lip gap is within tongue's reach of the candy's edge on screen: 0.7 eye spans, so it scales with how close the face is to the camera (`src/reach.js`).
-- **In reach:** a green ring around the candy, and "+1" after each scored lick.
-- **Too far:** a dashed grey ring, "Too far", and a prompt to bring the mouth to the candy.
+The candy stays still; the player brings their mouth to it and licks. A lick scores only if **the tongue itself touches the candy**:
+- **Tongue shape.** Flood-fill tongue-coloured pixels outward from the tongue samples found between the lips, on a grid of 0.04 eye spans, up to 1.3 eye spans from the mouth (`tongueBlob` in `src/tongue-signal.js`). A tongue out over the lips is one connected pink area, so the fill follows it to its tip wherever it points, and stops at the skin and lips around it.
+- **Touch.** Some point of that shape lies inside the candy's circle on screen (`src/reach.js`). The tongue and the candy are compared in the same screen pixels, so this holds on any screen size.
+- **Scoring.** A lick scores once if the tongue touches the candy at any moment while it is out; a lick that ends without touching is a miss.
+- **On screen.** The tongue shape is drawn as pink dots. The ring around the candy turns green while the tongue touches it. Each scored lick shows "+1"; a miss shows "Missed" and a prompt to touch the candy with the tongue.
 
 Calibration waits 1.2 s after Start or Play again so the mouth can settle, and the calibrated closed-lip gap only ever narrows, so a replay that starts mid-laugh corrects itself the first time the lips close.
 
@@ -49,7 +51,7 @@ A dent at the contact point that springs back, a damped wobble, a clearcoat "wet
 
 ## Tests
 
-`npm test` runs 34 tests:
+`npm test` runs 36 tests:
 
 - fast trains (4 flicks/s, also at 10 fps), slow licks, licking that only half-retracts the tongue, a held tongue with jitter;
 - hovering near the threshold, single-frame spikes;

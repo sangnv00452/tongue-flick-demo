@@ -80,6 +80,9 @@ export const SIGNAL_DEFAULTS = Object.freeze({
   lumaFloor: 0.07, // darker pixels are sensor noise, not colour
   minRelLuma: 0.5, // and at least this bright relative to the cheeks (rules out the mouth cavity)
   minValidRatio: 0.5, // below this share of usable samples the cue reports unknown
+  blobStep: 0.04, // tongue-shape grid spacing, in eye spans
+  blobReach: 1.3, // the tongue shape is searched this far from the mouth centre, in eye spans
+  blobMaxPoints: 3000,
 });
 
 function averageChroma(samples) {
@@ -147,11 +150,11 @@ export function createTongueTracker(options = {}) {
       const samples = [];
 
       const skin = skinReference(pts, sample, f);
-      if (skin.luma < o.lumaFloor) return { extension: null, lipDrag, gap, samples, region, lipLine };
+      if (skin.luma < o.lumaFloor) return { extension: null, lipDrag, gap, samples, region, lipLine, blob: [] };
       // Closed lips still leave a small gap between the tracked inner-lip points, and the inner lip is
       // pink like a tongue (measured: 20-40% "fill" with the mouth shut). So the mouth only counts as
       // open once the gap is wider than this person's calibrated closed gap by minGap.
-      if (gap - (cal ? cal.gap : 0) < o.minGap) return { extension: 0, lipDrag, gap, samples, region, lipLine };
+      if (gap - (cal ? cal.gap : 0) < o.minGap) return { extension: 0, lipDrag, gap, samples, region, lipLine, blob: [] };
 
       let usable = 0;
       let tongue = 0;
@@ -174,9 +177,47 @@ export function createTongueTracker(options = {}) {
       }
       // A mouth this open is mostly shadow when empty: too few lit samples is "no tongue", not "unknown".
       const extension = usable / (o.rows * o.cols) < o.minValidRatio ? 0 : tongue / usable;
-      return { extension, lipDrag, gap, samples, region, lipLine };
+      const mouth = fromLocal((u0 + u1) / 2, (top + bottom) / 2, chin, f);
+      const blob = tongueBlob(samples.filter((s) => s.kind === 'tongue'), mouth, f.scale, sample, skin, o);
+      return { extension, lipDrag, gap, samples, region, lipLine, blob };
     },
   };
+}
+
+/**
+ * The tongue's shape in the frame: flood-fill tongue-coloured pixels outward from the tongue samples
+ * found between the lips, on a coarse grid, up to `blobReach` eye spans from the mouth. A tongue out
+ * over the lips is one connected pink area, so this follows it to its tip, wherever it points; the
+ * skin and lips around it are not tongue-coloured, so the fill stops at its edge.
+ * Returns grid points in the sampler's pixel coordinates.
+ */
+export function tongueBlob(seeds, mouth, eyeSpan, sample, skin, o = SIGNAL_DEFAULTS) {
+  if (!seeds.length) return [];
+  const step = Math.max(1, Math.round(eyeSpan * o.blobStep));
+  const reach = eyeSpan * o.blobReach;
+  const seen = new Set();
+  const out = [];
+  const queue = [];
+  const push = (gx, gy) => {
+    const key = `${gx},${gy}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    const x = gx * step;
+    const y = gy * step;
+    if (Math.hypot(x - mouth.x, y - mouth.y) > reach) return;
+    if (!isTongueColour(chroma(sample(x, y)), skin, o)) return;
+    out.push({ x, y });
+    queue.push([gx, gy]);
+  };
+  for (const s of seeds) push(Math.round(s.x / step), Math.round(s.y / step));
+  while (queue.length && out.length < o.blobMaxPoints) {
+    const [gx, gy] = queue.shift();
+    push(gx + 1, gy);
+    push(gx - 1, gy);
+    push(gx, gy + 1);
+    push(gx, gy - 1);
+  }
+  return out;
 }
 
 /** Yaw and pitch in degrees from MediaPipe's column-major 4x4 facial transformation matrix. */

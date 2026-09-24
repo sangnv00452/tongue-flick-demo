@@ -1,19 +1,15 @@
-// Whether the tongue can reach the candy: a lick only scores when the mouth is within tongue's reach
-// of the candy's edge on screen. The candy stays still; the player brings their mouth to it.
+// Whether the tongue touches the candy: some point of the detected tongue shape lies inside the
+// candy's circle on screen. Both are in the same screen pixels, so it holds on any screen size.
+// The candy stays still; the player brings their mouth to it and licks.
 // Pure: screen pixel coordinates in, verdict out.
 
-export const REACH = Object.freeze({
-  /** How far a tongue sticks out past the lips on screen, in eye spans (eye corner to eye corner). */
-  tongueEyeSpans: 0.7,
-});
-
 /**
- * `mouth` = centre of the gap between the lips, `eyeSpan` = eye corner distance (both screen px),
- * `candy` = { x, y, r } in screen px. Returns { inReach, gap } where gap is how far the mouth is
- * beyond reach (0 when in reach), in px.
+ * `tongue` = tongue-shape points on screen, `candy` = { x, y, r } on screen.
+ * Returns { touching, distance }: distance is from the candy's edge to the nearest tongue point
+ * (0 when touching, Infinity when there is no tongue).
  */
-export function candyReach(mouth, eyeSpan, candy, o = REACH) {
-  const d = Math.hypot(mouth.x - candy.x, mouth.y - candy.y);
-  const limit = candy.r + o.tongueEyeSpans * eyeSpan;
-  return { inReach: d <= limit, gap: Math.max(0, d - limit) };
+export function touchesCandy(tongue, candy) {
+  let nearest = Infinity;
+  for (const p of tongue) nearest = Math.min(nearest, Math.hypot(p.x - candy.x, p.y - candy.y) - candy.r);
+  return { touching: nearest <= 0, distance: Math.max(0, nearest) };
 }

@@ -197,6 +197,23 @@ test('teeth showing in the gap do not read as tongue', () => {
   assert.ok(r < OFF, `rise ${r.toFixed(3)}`);
 });
 
+test('the tongue shape follows the tongue to its tip, and stops at its edge', () => {
+  const t = calibratedTracker();
+  const m = t.measure(face({ jaw: 10 }), image({ jaw: 10, tongueTo: 262 }));
+  const ys = m.blob.map((p) => p.y);
+  const xs = m.blob.map((p) => p.x);
+  // The painted tongue runs down to y = 272 (262 + jaw) and spans x 128..172.
+  assert.ok(Math.max(...ys) >= 266 && Math.max(...ys) <= 274, `tip at ${Math.max(...ys)}`);
+  assert.ok(Math.min(...xs) >= 126 && Math.max(...xs) <= 174, `x ${Math.min(...xs)}..${Math.max(...xs)}`);
+});
+
+test('a short tongue gives a short shape, and closed lips give none', () => {
+  const t = calibratedTracker();
+  const short = t.measure(face({ jaw: 10 }), image({ jaw: 10, tongueTo: 226 }));
+  assert.ok(Math.max(...short.blob.map((p) => p.y)) <= 240);
+  assert.deepEqual(t.measure(face(), image()).blob, []);
+});
+
 test('head angles come out of the transformation matrix', () => {
   const yaw30 = [Math.cos(Math.PI / 6), 0, -Math.sin(Math.PI / 6), 0, 0, 1, 0, 0, Math.sin(Math.PI / 6), 0, Math.cos(Math.PI / 6), 0, 0, 0, 0, 1];
   assert.ok(Math.abs(headAngles(yaw30).yaw - 30) < 1e-6);

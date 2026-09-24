@@ -1,22 +1,19 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { candyReach } from '../src/reach.js';
+import { touchesCandy } from '../src/reach.js';
 
 const candy = { x: 200, y: 600, r: 50 };
 
-test('a mouth right above the candy is in reach', () => {
-  // 80 px above the centre: 30 px past the candy edge, tongue reaches 0.7 x 100 = 70 px.
-  assert.deepEqual(candyReach({ x: 200, y: 520 }, 100, candy), { inReach: true, gap: 0 });
+test('a tongue whose tip enters the candy circle touches it', () => {
+  const tongue = [{ x: 200, y: 520 }, { x: 200, y: 540 }, { x: 200, y: 555 }];
+  assert.deepEqual(touchesCandy(tongue, candy), { touching: true, distance: 0 });
 });
 
-test('a mouth far above the candy is out of reach, and says by how much', () => {
-  const r = candyReach({ x: 200, y: 400 }, 100, candy);
-  assert.equal(r.inReach, false);
-  assert.equal(r.gap, 200 - 50 - 70);
+test('a tongue that stops short does not touch, and says how far it is', () => {
+  const tongue = [{ x: 200, y: 500 }, { x: 200, y: 520 }];
+  assert.deepEqual(touchesCandy(tongue, candy), { touching: false, distance: 30 });
 });
 
-test('reach scales with the face: a face closer to the camera reaches further on screen', () => {
-  const mouth = { x: 200, y: 450 };
-  assert.equal(candyReach(mouth, 100, candy).inReach, false);
-  assert.equal(candyReach(mouth, 150, candy).inReach, true);
+test('a face right at the candy with no tongue out does not touch', () => {
+  assert.deepEqual(touchesCandy([], candy), { touching: false, distance: Infinity });
 });
