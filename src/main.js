@@ -37,6 +37,7 @@ const ui = {
   debug: $('debug'),
   debugText: $('debug-text'),
   toggleDebug: $('toggle-debug'),
+  freeze: $('freeze'),
   mute: $('mute'),
   simButton: $('sim-lick'),
   status: $('status'),
@@ -310,9 +311,9 @@ function drawOverlay() {
     g.fill();
   }
 
-  // Verdict next to the region.
-  const x = Math.max(region[1].x, region[2].x) + 10;
-  const y = (region[1].y + region[2].y) / 2;
+  // Verdict under the mouth, clear of the samples (the video is mirrored, so take the box's screen extent).
+  const x = Math.min(...region.map((p) => p.x));
+  const y = Math.max(...region.map((p) => p.y)) + Math.max(28, (Math.max(...region.map((p) => p.y)) - Math.min(...region.map((p) => p.y))) * 1.6);
   g.font = '600 15px system-ui, sans-serif';
   g.fillStyle = out ? '#ff3c78' : '#fff';
   g.shadowColor = '#000';
@@ -358,13 +359,38 @@ function drawGraph() {
 // ---------- main loop
 let lastT = null;
 let manualClock = false; // set once advanceTime() drives the game, for deterministic tests
+// Freeze: a few seconds after the tap, stop on the current frame with its overlay so a screenshot
+// catches exactly what the tracker saw (tongue out is hard to screenshot live).
+const freeze = { at: null, since: null };
+function updateFreeze(now) {
+  if (freeze.at !== null && now >= freeze.at) {
+    freeze.at = null;
+    freeze.since = now;
+    ui.video.pause();
+    ui.freeze.textContent = 'Resume';
+  }
+  if (freeze.at !== null) ui.hint.textContent = `Freezing in ${Math.ceil((freeze.at - now) / 1000)}…`;
+  else if (freeze.since !== null) ui.hint.textContent = 'Frozen: take a screenshot';
+}
+ui.freeze.addEventListener('click', () => {
+  const now = performance.now();
+  if (freeze.since !== null) {
+    game.startedAt += now - freeze.since; // the round clock does not run while frozen
+    freeze.since = null;
+    lastT = now;
+    ui.video.play();
+    ui.freeze.textContent = 'Freeze 3s';
+  } else if (freeze.at === null) freeze.at = now + 3000;
+});
+
 function frame(now) {
-  if (!manualClock) {
+  if (!manualClock && freeze.since === null) {
     const dt = lastT === null ? 0 : Math.min(100, now - lastT);
     lastT = now;
     step(now, dt);
   }
   renderHud();
+  updateFreeze(now);
   drawOverlay();
   if (debugOn) drawGraph();
   renderer.render(scene, camera);
