@@ -73,7 +73,7 @@
         g.closePath();
         g.stroke();
         for (const s of m.samples) {
-          g.fillStyle = { tongue: '#ff3c78', skin: '#fff', dark: '#555' }[s.kind];
+          g.fillStyle = { tongue: '#ff3c78', skin: '#fff', shadow: '#8a8fa3', dark: '#555' }[s.kind];
           g.beginPath();
           g.arc(s.x, s.y, 3, 0, Math.PI * 2);
           g.fill();
@@ -83,7 +83,7 @@
           g.fillRect(pts[i].x - 4, pts[i].y - 4, 8, 8);
         }
         const kinds = m.samples.reduce((a, s) => ({ ...a, [s.kind]: (a[s.kind] || 0) + 1 }), {});
-        return { face: true, extension: m.extension, rowsCovered: m.rowsCovered, kinds };
+        return { face: true, extension: m.extension, kinds };
       }
 
       const tracker = createTongueTracker();

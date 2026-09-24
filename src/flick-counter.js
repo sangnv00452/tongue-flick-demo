@@ -20,11 +20,11 @@ export const DEFAULTS = Object.freeze({
   refractoryMs: 110,
   maxAngularDegPerSec: 120,
   baselineTauMs: 8000, // slow baseline drift while the tongue is in (lighting changes during play)
-  // Extension moves in sixths (rows of the search grid); a 0.05 floor puts ON at two rows past the lip.
-  stdFloor: Object.freeze({ extension: 0.05 }),
+  // extension is a share of the search area (ON at +0.2); lipDrag is in eye spans (ON at +0.1).
+  stdFloor: Object.freeze({ extension: 0.05, lipDrag: 0.025 }),
 });
 
-const CUES = ['extension'];
+const CUES = ['extension', 'lipDrag'];
 
 function createStat() {
   return { n: 0, mean: 0, m2: 0 };
@@ -55,7 +55,7 @@ export function createFlickCounter(options = {}) {
       pending: 0,
       signal: 0,
       gated: false,
-      stats: { extension: createStat() },
+      stats: { extension: createStat(), lipDrag: createStat() },
     };
   }
   reset();
@@ -82,7 +82,7 @@ export function createFlickCounter(options = {}) {
   }
 
   /**
-   * One frame. `t` in ms, `cues` = { extension } (null when unmeasurable, e.g. too dark),
+   * One frame. `t` in ms, `cues` = { extension, lipDrag } (null or missing when unmeasurable),
    * `angularVel` in deg/s, `faceFound` false when the tracker lost the face.
    * Returns { state, count, signal, gated, flick } where `flick` is true on the frame a flick is counted.
    */

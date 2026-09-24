@@ -42,7 +42,7 @@ function image({ jaw = 0, tongueTo = 0, tongueInside = false, light = [1, 1, 1],
     const mid = Math.abs(fx - 150);
     let c = [200, 150, 130];
     if (fy >= 196 && fy <= 202 && mid < 30) c = [190, 90, 90]; // upper lip
-    if (jaw && fy > 202 && fy < 203 + jaw && mid < 26) c = tongueInside ? [205, 95, 105] : [40, 20, 20]; // open mouth
+    if (jaw && fy > 202 && fy < 203 + jaw && mid < 26) c = tongueInside ? [110, 50, 55] : [40, 20, 20]; // open mouth (a tongue at rest in it is in shade)
     if (fy >= 203 + jaw && fy <= 222 + jaw && mid < 30) c = [190, 90, 90]; // lower lip
     if (tongueTo && fy >= 203 && fy <= tongueTo + jaw && mid < 20) c = [205, 95, 105]; // tongue out
     return c.map((v, i) => Math.min(255, v * light[i]));
@@ -62,20 +62,41 @@ test('head frame follows the eyes and points down toward the chin', () => {
   assert.deepEqual(toLocal({ x: 150, y: 220 }, { x: 150, y: 280 }, f), { u: 0, v: -0.6 });
 });
 
-test('tongue in reads zero, tongue out over the lip reads high', () => {
+// The counter works on the change from the calibrated (tongue in) reading: it enters "out" at about
+// +0.2 and leaves below about +0.1 (ON/OFF with the 0.05 deviation floor).
+const ON = 0.2;
+const OFF = 0.1;
+const rise = (t, f, img) => t.measure(f, img).extension - t.measure(face(), image()).extension;
+
+test('a tongue hanging over the lip toward the chin rises far above the tongue-in reading', () => {
   const t = calibratedTracker();
-  assert.equal(t.measure(face(), image()).extension, 0);
-  assert.ok(t.measure(face({ jaw: 10, lipOnTongue: 30 }), image({ jaw: 10, tongueTo: 262 })).extension >= 0.5);
+  assert.ok(rise(t, face({ jaw: 10, lipOnTongue: 30 }), image({ jaw: 10, tongueTo: 262 })) >= ON + 0.1);
 });
 
-test('opening the mouth without the tongue does not read as tongue', () => {
+test('a short tongue straight out shows little new colour but drags the lip landmark (second cue)', () => {
   const t = calibratedTracker();
-  assert.equal(t.measure(face({ jaw: 25 }), image({ jaw: 25 })).extension, 0);
+  // Pointing at the camera it mostly covers the lips, which were red already: colour alone is weak...
+  const m = t.measure(face({ jaw: 12, lipOnTongue: 14 }), image({ jaw: 12, tongueTo: 226 }));
+  // ...but the tracker pushes the lower-lip landmark onto the tongue, 0.14 eye spans below its place.
+  assert.ok(Math.abs(m.lipDrag - 0.14) < 1e-9, `lipDrag ${m.lipDrag}`);
+  assert.ok(m.lipDrag >= 0.1, 'crosses ON for the lip-drag cue (4 x 0.025)');
 });
 
-test('a tongue resting inside the open mouth does not read as sticking out', () => {
+test('opening the mouth does not drag the lip: lip and chin move together', () => {
   const t = calibratedTracker();
-  assert.equal(t.measure(face({ jaw: 25 }), image({ jaw: 25, tongueInside: true })).extension, 0);
+  assert.ok(Math.abs(t.measure(face({ jaw: 25 }), image({ jaw: 25 })).lipDrag) < 1e-9);
+});
+
+test('opening the mouth without the tongue stays below OFF (the cavity is dark, not tongue)', () => {
+  const t = calibratedTracker();
+  const r = rise(t, face({ jaw: 25 }), image({ jaw: 25 }));
+  assert.ok(r < OFF, `rise ${r.toFixed(3)}`);
+});
+
+test('a tongue resting in the shade of the open mouth stays below OFF', () => {
+  const t = calibratedTracker();
+  const r = rise(t, face({ jaw: 25 }), image({ jaw: 25, tongueInside: true }));
+  assert.ok(r < OFF, `rise ${r.toFixed(3)}`);
 });
 
 test('the lip landmark dragged onto the tongue does not move the search region', () => {
@@ -87,9 +108,11 @@ test('the lip landmark dragged onto the tongue does not move the search region',
 
 test('warm light and dim light keep the same verdict (colour is judged against the cheeks)', () => {
   const t = calibratedTracker();
+  const neutralIn = t.measure(face(), image()).extension;
   for (const light of [[1.25, 1, 0.8], [0.35, 0.35, 0.35]]) {
-    assert.equal(t.measure(face(), image({ light })).extension, 0, `in, light ${light}`);
-    assert.ok(t.measure(face({ jaw: 10 }), image({ jaw: 10, tongueTo: 262, light })).extension >= 0.5, `out, light ${light}`);
+    const inside = t.measure(face(), image({ light })).extension;
+    assert.ok(Math.abs(inside - neutralIn) < 0.05, `in, light ${light}: ${inside} vs ${neutralIn}`);
+    assert.ok(t.measure(face({ jaw: 10 }), image({ jaw: 10, tongueTo: 262, light })).extension - inside >= ON + 0.1, `out, light ${light}`);
   }
 });
 
@@ -102,13 +125,13 @@ test('a tilted head gives the same reading (measured along the head, not the scr
   const t = calibratedTracker();
   const tilted = t.measure(face({ jaw: 10, rotateDeg: 25 }), image({ jaw: 10, tongueTo: 262, rotateDeg: 25 })).extension;
   const straight = t.measure(face({ jaw: 10 }), image({ jaw: 10, tongueTo: 262 })).extension;
-  assert.ok(Math.abs(tilted - straight) <= 1 / 6 + 1e-9, `tilted ${tilted} vs straight ${straight}`);
+  assert.ok(Math.abs(tilted - straight) <= 0.1, `tilted ${tilted} vs straight ${straight}`);
 });
 
 test('every sample is reported for drawing, labelled by what it saw', () => {
   const t = calibratedTracker();
   const m = t.measure(face({ jaw: 10 }), image({ jaw: 10, tongueTo: 262 }));
-  assert.equal(m.samples.length, 42);
+  assert.equal(m.samples.length, 56);
   assert.ok(m.samples.some((s) => s.kind === 'tongue'));
   assert.equal(m.region.length, 4);
 });

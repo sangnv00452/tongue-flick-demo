@@ -208,8 +208,9 @@ function readCameraCues(t) {
     lipLine: m0.lipLine.map(fromSample),
     samples: m0.samples.map((s) => ({ ...fromSample(s), kind: s.kind })),
     extension,
+    lipDrag: m0.lipDrag,
   };
-  return { faceFound: true, cues: { extension }, angularVel: head.angularVel };
+  return { faceFound: true, cues: { extension, lipDrag: m0.lipDrag }, angularVel: head.angularVel };
 }
 
 // ---------- simulation input
@@ -266,7 +267,7 @@ function drawOverlay() {
   const g = ui.overlay.getContext('2d');
   g.clearRect(0, 0, view.w, view.h);
   if (!lastFace) return;
-  const { screenPts, region, lipLine, samples, extension } = lastFace;
+  const { screenPts, region, lipLine, samples, extension, lipDrag } = lastFace;
   const out = counter.snapshot().state === 'out';
 
   // Face mesh: every landmark as a faint dot.
@@ -301,7 +302,7 @@ function drawOverlay() {
   g.setLineDash([]);
 
   // Each sample, coloured by what it saw.
-  const colour = { tongue: '#ff3c78', skin: 'rgba(255,255,255,0.7)', dark: '#555' };
+  const colour = { tongue: '#ff3c78', skin: 'rgba(255,255,255,0.7)', shadow: '#8a8fa3', dark: '#555' };
   for (const s of samples) {
     g.fillStyle = colour[s.kind];
     g.beginPath();
@@ -310,12 +311,15 @@ function drawOverlay() {
   }
 
   // Verdict next to the region.
-  const label = extension === null ? 'too dark' : `${out ? 'TONGUE OUT' : 'tongue in'} · ${Math.round(extension * 100)}%`;
+  const x = Math.max(region[1].x, region[2].x) + 10;
+  const y = (region[1].y + region[2].y) / 2;
   g.font = '600 15px system-ui, sans-serif';
   g.fillStyle = out ? '#ff3c78' : '#fff';
   g.shadowColor = '#000';
   g.shadowBlur = 4;
-  g.fillText(label, Math.max(region[1].x, region[2].x) + 10, (region[1].y + region[2].y) / 2);
+  g.fillText(out ? 'TONGUE OUT' : 'tongue in', x, y - 9);
+  g.font = '500 12px system-ui, sans-serif';
+  g.fillText(`colour ${extension === null ? 'too dark' : `${Math.round(extension * 100)}%`} · lip drag ${lipDrag.toFixed(2)} · z ${counter.snapshot().signal.toFixed(1)}`, x, y + 9);
   g.shadowBlur = 0;
 }
 
