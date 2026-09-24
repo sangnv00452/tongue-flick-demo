@@ -319,7 +319,7 @@ function drawOverlay() {
   g.shadowBlur = 4;
   g.fillText(out ? 'TONGUE OUT' : 'tongue in', x, y - 9);
   g.font = '500 12px system-ui, sans-serif';
-  g.fillText(`colour ${extension === null ? 'too dark' : `${Math.round(extension * 100)}%`} · lip drag ${lipDrag.toFixed(2)} · z ${counter.snapshot().signal.toFixed(1)}`, x, y + 9);
+  g.fillText(`fill ${extension === null ? "too dark" : `${Math.round(extension * 100)}%`} · lip drag ${lipDrag.toFixed(2)} · z ${counter.snapshot().signal.toFixed(1)}`, x, y + 9);
   g.shadowBlur = 0;
 }
 

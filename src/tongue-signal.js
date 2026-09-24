@@ -1,17 +1,15 @@
-// Measures how far the tongue sticks out, from face landmarks plus the camera frame.
+// Tells whether the tongue is out, from face landmarks plus the camera frame.
 // MediaPipe's face blendshapes have no tongue output (tasks-vision has no `tongueOut`), so the tongue
-// is found in pixels:
-//   - During calibration (tongue in) we record where the lower lip sits relative to the chin, in the
-//     head's own frame. Lip and chin both ride on the jaw, so that offset holds when the mouth opens.
-//     (The tracked lower-lip landmarks are not trusted later: the tracker drags them onto the tongue.)
-//   - Each frame we sample a grid from the upper lip down past that lip line: a tongue sticking
-//     straight out mostly covers the mouth and lower lip in the picture, a longer one also the chin.
-//     The cue is the tongue-coloured share of that area, with samples below the lip line counting
-//     double. The lips are red too, but they are in the calibrated baseline the counter compares to.
-//   - Tongue-coloured = redder and less green than the cheeks in the same frame (chromaticity, so warm
-//     or dim light shifts both sides and cancels out) and not much darker than them: an open mouth
-//     with no tongue is a dark red cavity, a tongue sticking out is lit.
-// Pure: points are pixel coordinates, pixels come from a sampler callback.
+// is found directly. Licking only needs the tongue to come out over the lips, and colour alone cannot
+// separate a tongue from the lips (both are redder than skin). What does separate them:
+//   1. Mouth fill (main cue): the lips part and the gap between them fills with a lit, tongue-coloured
+//      surface. Closed lips have no gap; an open mouth without the tongue is a dark cavity or white
+//      teeth; a tongue resting inside the mouth is in shade. Only a tongue coming out fills the gap.
+//   2. Lip drag (second cue): the tracker pushes the lower-lip landmarks onto a protruding tongue.
+//      Measured against where the lower lip sat during calibration relative to the chin (lip and chin
+//      both ride on the jaw), so opening the mouth leaves it at zero.
+// Colour is judged as chromaticity against the cheeks in the same frame, so warm or dim light shifts
+// both sides and cancels out. Pure: points are pixel coordinates, pixels come from a sampler callback.
 
 export const LM = Object.freeze({
   forehead: 10,
@@ -19,6 +17,8 @@ export const LM = Object.freeze({
   upperInner: 13,
   lowerInner: 14,
   lowerOuter: 17,
+  innerCornerR: 78,
+  innerCornerL: 308,
   chin: 152,
   eyeOuterR: 33,
   eyeOuterL: 263,
@@ -60,15 +60,14 @@ export function chroma([r, g, b]) {
 }
 
 export const SIGNAL_DEFAULTS = Object.freeze({
-  rows: 8, // search grid from the upper lip down past the expected lower-lip line
-  cols: 7,
-  halfWidth: 0.25, // in eye spans, each side of the midline
-  depth: 0.6, // below the lip line, search this share of the lip-to-chin distance
-  belowLipWeight: 2, // tongue seen below the lip line counts double
+  rows: 4, // samples across the gap between the inner lips
+  cols: 7, // samples along it, corner to corner
+  inset: 0.15, // keep this share of the gap and the width clear at each edge (lip edges are red too)
+  minGap: 0.04, // lips closer than this (in eye spans) are closed: nothing can be in between
   redDelta: 0.02, // tongue must be this much redder than cheek skin (chromaticity)
   greenDelta: -0.01, // and this much less green
   lumaFloor: 0.07, // darker pixels are sensor noise, not colour
-  minRelLuma: 0.5, // tongue must be at least this bright relative to the cheeks (rules out the mouth cavity)
+  minRelLuma: 0.5, // and at least this bright relative to the cheeks (rules out the mouth cavity)
   minValidRatio: 0.5, // below this share of usable samples the cue reports unknown
 });
 
@@ -77,7 +76,7 @@ function averageChroma(samples) {
   return samples.reduce((acc, c) => ({ r: acc.r + c.r / n, g: acc.g + c.g / n, luma: acc.luma + c.luma / n }), { r: 0, g: 0, luma: 0 });
 }
 
-/** Cheek colour in this frame: the reference the chin region is compared against. */
+/** Cheek colour in this frame: the reference the mouth is compared against. */
 export function skinReference(pts, sample, f) {
   const out = [];
   for (const i of [LM.cheekR, LM.cheekL])
@@ -85,81 +84,79 @@ export function skinReference(pts, sample, f) {
   return averageChroma(out);
 }
 
+const median = (xs) => [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)];
+
 export function createTongueTracker(options = {}) {
   const o = { ...SIGNAL_DEFAULTS, ...options };
-  let offsets = [];
-  let lip = null; // calibrated lower-lip position relative to the chin, in head-local units
-
-  /**
-   * Second cue, independent of colour: how far the tracked lower lip sits below where it sat during
-   * calibration, measured from the chin. A protruding tongue drags the lower-lip landmarks down onto
-   * it; opening the mouth moves lip and chin together and leaves this at zero.
-   */
-  const lipDragOf = (pts, f, chin) => (lip ? toLocal(pts[LM.lowerOuter], chin, f).v - lip.v : 0);
+  let seen = [];
+  let cal = null; // lower-lip positions relative to the chin while the tongue is in, in head-local units
 
   return {
     reset() {
-      offsets = [];
-      lip = null;
+      seen = [];
+      cal = null;
     },
     /** Call on calibration frames (tongue in). */
     calibrate(pts) {
       const f = headFrame(pts);
-      offsets.push(toLocal(pts[LM.lowerOuter], pts[LM.chin], f));
-      const us = offsets.map((p) => p.u).sort((a, b) => a - b);
-      const vs = offsets.map((p) => p.v).sort((a, b) => a - b);
-      const mid = Math.floor(offsets.length / 2);
-      lip = { u: us[mid], v: vs[mid] };
+      const chin = pts[LM.chin];
+      seen.push({ outer: toLocal(pts[LM.lowerOuter], chin, f).v, inner: toLocal(pts[LM.lowerInner], chin, f).v });
+      cal = { outer: median(seen.map((s) => s.outer)), inner: median(seen.map((s) => s.inner)) };
     },
     get calibrated() {
-      return lip !== null;
+      return cal !== null;
     },
     /**
-     * { extension: 0..1 (weighted share of tongue-coloured area) or null when too dark, share, samples: [{x, y, kind}],
-     *   region: 4 corner points, lipLine: [a, b] } — all points in the sampler's pixel coordinates.
+     * { extension: 0..1 share of the lip gap filled by a lit tongue (0 when the lips are closed, null
+     *   when too dark to tell), lipDrag (eye spans), gap (eye spans), samples: [{x, y, kind}],
+     *   region: the gap as 4 corner points, lipLine: calibrated inner lower-lip line }.
+     * All points are in the sampler's pixel coordinates.
      */
     measure(pts, sample) {
       const f = headFrame(pts);
       const chin = pts[LM.chin];
-      const lipAt = lip ?? toLocal(pts[LM.lowerOuter], chin, f);
-      // From the upper lip (live: it rides on the skull, the tongue does not drag it) down past the
-      // calibrated lower-lip line. A tongue sticking straight out mostly covers the mouth and lower lip
-      // in the picture, so both belong in the region; the lips are in the calibrated baseline anyway.
-      const top = Math.min(toLocal(pts[LM.upperInner], chin, f).v, lipAt.v - 0.05);
-      const bottom = lipAt.v + Math.abs(lipAt.v) * o.depth;
-      const skin = skinReference(pts, sample, f);
+      const lipDrag = cal ? toLocal(pts[LM.lowerOuter], chin, f).v - cal.outer : 0;
+
+      // The gap: from the live upper inner lip (it rides on the skull) down to the lower inner lip.
+      // If the tracker pulls the lower inner lip up onto the tongue, the calibrated position (it moves
+      // with the jaw, like the chin) still marks where the lower lip really is.
+      const top = toLocal(pts[LM.upperInner], chin, f).v;
+      const bottom = Math.max(toLocal(pts[LM.lowerInner], chin, f).v, cal ? cal.inner : -Infinity);
+      const cr = toLocal(pts[LM.innerCornerR], chin, f).u;
+      const cl = toLocal(pts[LM.innerCornerL], chin, f).u;
+      const u0 = Math.min(cr, cl);
+      const u1 = Math.max(cr, cl);
+      const gap = bottom - top;
+      const region = [fromLocal(u0, top, chin, f), fromLocal(u1, top, chin, f), fromLocal(u1, bottom, chin, f), fromLocal(u0, bottom, chin, f)];
+      const lipLine = cal ? [fromLocal(u0, cal.inner, chin, f), fromLocal(u1, cal.inner, chin, f)] : [region[3], region[2]];
       const samples = [];
-      const region = [fromLocal(lipAt.u - o.halfWidth, top, chin, f), fromLocal(lipAt.u + o.halfWidth, top, chin, f), fromLocal(lipAt.u + o.halfWidth, bottom, chin, f), fromLocal(lipAt.u - o.halfWidth, bottom, chin, f)];
-      const lipLine = [fromLocal(lipAt.u - o.halfWidth, lipAt.v, chin, f), fromLocal(lipAt.u + o.halfWidth, lipAt.v, chin, f)];
-      if (skin.luma < o.lumaFloor) return { extension: null, share: 0, lipDrag: lipDragOf(pts, f, chin), samples, region, lipLine };
+
+      const skin = skinReference(pts, sample, f);
+      if (skin.luma < o.lumaFloor) return { extension: null, lipDrag, gap, samples, region, lipLine };
+      if (gap < o.minGap) return { extension: 0, lipDrag, gap, samples, region, lipLine };
 
       let usable = 0;
-      let weightSum = 0;
-      let tongueWeight = 0;
+      let tongue = 0;
+      const span = (a, b, i, n) => a + (b - a) * (o.inset + ((1 - 2 * o.inset) * (i + 0.5)) / n);
       for (let r = 0; r < o.rows; r++) {
-        const v = top + ((bottom - top) * (r + 0.5)) / o.rows;
-        // Tongue below the lip line is the strongest evidence; tongue-coloured pixels inside the mouth
-        // could be a tongue at rest, so they count for less.
-        const weight = v > lipAt.v ? o.belowLipWeight : 1;
+        const v = span(top, bottom, r, o.rows);
         for (let c = 0; c < o.cols; c++) {
-          const u = lipAt.u - o.halfWidth + (2 * o.halfWidth * (c + 0.5)) / o.cols;
-          const p = fromLocal(u, v, chin, f);
+          const p = fromLocal(span(u0, u1, c, o.cols), v, chin, f);
           const px = chroma(sample(p.x, p.y));
           let kind = 'dark';
           if (px.luma >= o.lumaFloor) {
             usable++;
-            weightSum += weight;
             const lit = px.luma >= o.minRelLuma * skin.luma;
             const isTongue = lit && px.r - skin.r >= o.redDelta && px.g - skin.g <= o.greenDelta;
             kind = isTongue ? 'tongue' : lit ? 'skin' : 'shadow';
-            if (isTongue) tongueWeight += weight;
+            if (isTongue) tongue++;
           }
           samples.push({ x: p.x, y: p.y, kind });
         }
       }
-      const share = weightSum ? tongueWeight / weightSum : 0;
-      const extension = usable / (o.rows * o.cols) < o.minValidRatio ? null : share;
-      return { extension, share, lipDrag: lipDragOf(pts, f, chin), samples, region, lipLine };
+      // A mouth this open is mostly shadow when empty: too few lit samples is "no tongue", not "unknown".
+      const extension = usable / (o.rows * o.cols) < o.minValidRatio ? 0 : tongue / usable;
+      return { extension, lipDrag, gap, samples, region, lipLine };
     },
   };
 }

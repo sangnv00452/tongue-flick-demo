@@ -11,8 +11,10 @@ function face({ jaw = 0, lipOnTongue = 0, rotateDeg = 0 } = {}) {
     [LM.eyeOuterL]: [200, 100],
     [LM.forehead]: [150, 40],
     [LM.nose]: [150, 160],
-    [LM.upperInner]: [150, 200],
-    [LM.lowerInner]: [150, 205 + jaw],
+    [LM.innerCornerR]: [126, 203 + jaw / 2],
+    [LM.innerCornerL]: [174, 203 + jaw / 2],
+    [LM.upperInner]: [150, 202],
+    [LM.lowerInner]: [150, 203 + jaw],
     [LM.lowerOuter]: [150, 220 + jaw + lipOnTongue],
     [LM.chin]: [150, 280 + jaw],
     [LM.cheekR]: [110, 180],
@@ -41,10 +43,10 @@ function image({ jaw = 0, tongueTo = 0, tongueInside = false, light = [1, 1, 1],
     const fy = 160 + dx * Math.sin(a) + dy * Math.cos(a);
     const mid = Math.abs(fx - 150);
     let c = [200, 150, 130];
-    if (fy >= 196 && fy <= 202 && mid < 30) c = [190, 90, 90]; // upper lip
+    if (fy >= 194 && fy <= 202 && mid < 28) c = [190, 90, 90]; // upper lip
     if (jaw && fy > 202 && fy < 203 + jaw && mid < 26) c = tongueInside ? [110, 50, 55] : [40, 20, 20]; // open mouth (a tongue at rest in it is in shade)
     if (fy >= 203 + jaw && fy <= 222 + jaw && mid < 30) c = [190, 90, 90]; // lower lip
-    if (tongueTo && fy >= 203 && fy <= tongueTo + jaw && mid < 20) c = [205, 95, 105]; // tongue out
+    if (tongueTo && fy >= 203 && fy <= tongueTo + jaw && mid < 22) c = [205, 95, 105]; // tongue out, over the lips
     return c.map((v, i) => Math.min(255, v * light[i]));
   };
 }
@@ -68,16 +70,30 @@ const ON = 0.2;
 const OFF = 0.1;
 const rise = (t, f, img) => t.measure(f, img).extension - t.measure(face(), image()).extension;
 
-test('a tongue hanging over the lip toward the chin rises far above the tongue-in reading', () => {
+test('closed lips read zero: there is no gap for a tongue to fill, however red the lips are', () => {
   const t = calibratedTracker();
-  assert.ok(rise(t, face({ jaw: 10, lipOnTongue: 30 }), image({ jaw: 10, tongueTo: 262 })) >= ON + 0.1);
+  const m = t.measure(face(), image());
+  assert.equal(m.extension, 0);
+  assert.ok(m.gap < 0.04);
 });
 
-test('a short tongue straight out shows little new colour but drags the lip landmark (second cue)', () => {
+test('a tongue that just covers the lips (the licking case) crosses ON', () => {
   const t = calibratedTracker();
-  // Pointing at the camera it mostly covers the lips, which were red already: colour alone is weak...
+  const r = rise(t, face({ jaw: 10 }), image({ jaw: 10, tongueTo: 226 }));
+  assert.ok(r >= ON, `rise ${r.toFixed(3)}`);
+});
+
+test('a tongue hanging further, past the lips, crosses ON by more', () => {
+  const t = calibratedTracker();
+  const short = rise(t, face({ jaw: 10 }), image({ jaw: 10, tongueTo: 226 }));
+  const long = rise(t, face({ jaw: 10 }), image({ jaw: 10, tongueTo: 262 }));
+  assert.ok(long >= short && long >= ON, `short ${short.toFixed(3)} long ${long.toFixed(3)}`);
+});
+
+test('the lip landmark dragged onto the tongue is a second cue, independent of colour', () => {
+  const t = calibratedTracker();
   const m = t.measure(face({ jaw: 12, lipOnTongue: 14 }), image({ jaw: 12, tongueTo: 226 }));
-  // ...but the tracker pushes the lower-lip landmark onto the tongue, 0.14 eye spans below its place.
+  // The tracker pushed the lower-lip landmark 0.14 eye spans below its calibrated place.
   assert.ok(Math.abs(m.lipDrag - 0.14) < 1e-9, `lipDrag ${m.lipDrag}`);
   assert.ok(m.lipDrag >= 0.1, 'crosses ON for the lip-drag cue (4 x 0.025)');
 });
@@ -131,7 +147,7 @@ test('a tilted head gives the same reading (measured along the head, not the scr
 test('every sample is reported for drawing, labelled by what it saw', () => {
   const t = calibratedTracker();
   const m = t.measure(face({ jaw: 10 }), image({ jaw: 10, tongueTo: 262 }));
-  assert.equal(m.samples.length, 56);
+  assert.equal(m.samples.length, 28);
   assert.ok(m.samples.some((s) => s.kind === 'tongue'));
   assert.equal(m.region.length, 4);
 });

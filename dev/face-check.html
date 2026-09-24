@@ -40,13 +40,13 @@
         if (!first) return { face: false };
         const pts = first.map((p) => ({ x: p.x * canvas.width, y: p.y * canvas.height }));
         if (withTongue) {
-          // A tongue hanging over the lower lip toward the chin.
+          // A licking tongue: out between the lips, covering the gap and the lower lip.
+          const top = pts[LM.upperInner];
           const lip = pts[LM.lowerOuter];
-          const chin = pts[LM.chin];
-          const w = Math.hypot(pts[LM.eyeOuterL].x - pts[LM.eyeOuterR].x, pts[LM.eyeOuterL].y - pts[LM.eyeOuterR].y);
+          const w = Math.hypot(pts[LM.innerCornerL].x - pts[LM.innerCornerR].x, pts[LM.innerCornerL].y - pts[LM.innerCornerR].y);
           g.fillStyle = 'rgb(214,92,110)';
           g.beginPath();
-          g.ellipse(lip.x, (lip.y + chin.y) / 2 - (chin.y - lip.y) * 0.1, w * 0.17, (chin.y - lip.y) * 0.45, 0, 0, Math.PI * 2);
+          g.ellipse((top.x + lip.x) / 2, (top.y + lip.y) / 2 + (lip.y - top.y) * 0.15, w * 0.42, (lip.y - top.y) * 0.7, 0, 0, Math.PI * 2);
           g.fill();
         }
         const data = g.getImageData(0, 0, canvas.width, canvas.height).data;
