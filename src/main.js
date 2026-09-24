@@ -219,7 +219,7 @@ const sim = { tongueOut: false, headTurning: false };
 function readSimCues() {
   game.cueMode = 'simulated';
   const noise = (Math.random() - 0.5) * 0.02;
-  return { faceFound: true, cues: { extension: (sim.tongueOut ? 0.7 : 0) + noise }, angularVel: sim.headTurning ? 150 : 0 };
+  return { faceFound: true, cues: { extension: (sim.tongueOut ? 0.7 : 0) + noise }, angularVel: sim.headTurning ? 300 : 0 };
 }
 
 // ---------- per-frame step (shared by the real loop and advanceTime)
@@ -235,6 +235,7 @@ function step(t, dt) {
     if (game.state === 'calibrating' && r.state === 'in') setState('playing');
     if (game.state === 'playing' && r.flick) {
       game.score += 1;
+      game.lastLickAt = t;
       lollipop.lick();
       pop();
     }
@@ -324,6 +325,24 @@ function drawOverlay() {
   g.shadowBlur = 0;
 }
 
+/** "+1" rising from the candy for half a second after each lick, so the player sees it scored. */
+function drawLickFeedback() {
+  const age = game.now - (game.lastLickAt ?? -Infinity);
+  if (age > 500) return;
+  const g = ui.overlay.getContext('2d');
+  const k = age / 500;
+  g.globalAlpha = 1 - k;
+  g.font = '800 44px system-ui, sans-serif';
+  g.textAlign = 'center';
+  g.fillStyle = '#ffd166';
+  g.shadowColor = '#000';
+  g.shadowBlur = 8;
+  g.fillText('+1', view.w / 2, view.h * 0.8 - Math.min(view.w, view.h) * 0.2 - k * 50);
+  g.shadowBlur = 0;
+  g.textAlign = 'start';
+  g.globalAlpha = 1;
+}
+
 function drawGraph() {
   const c = ui.graph;
   const g = c.getContext('2d');
@@ -392,6 +411,7 @@ function frame(now) {
   renderHud();
   updateFreeze(now);
   drawOverlay();
+  drawLickFeedback();
   if (debugOn) drawGraph();
   renderer.render(scene, camera);
   requestAnimationFrame(frame);

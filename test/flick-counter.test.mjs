@@ -66,6 +66,19 @@ test('counts slow deliberate licks one each', () => {
   assert.equal(s.count, 4);
 });
 
+test('rapid licking that only half-retracts the tongue counts every lick', () => {
+  const c = calibrated();
+  // Out to 0.7, back only to 0.35 (never near the baseline), 6 times.
+  const s = run(c, 2160, (t) => (t < 1700 ? 0 : Math.floor((t - 1700) / 180) % 2 === 0 ? 0.7 : 0.35), { start: 1600 });
+  assert.equal(s.count, 6);
+});
+
+test('a tongue held out with jitter does not burst-count', () => {
+  const c = calibrated();
+  const s = run(c, 3000, (t) => (t > 1700 ? 0.6 + 0.05 * Math.sin(t / 30) : 0), { start: 1600 });
+  assert.equal(s.count, 1);
+});
+
 test('a held tongue scores once, however long it is held', () => {
   const c = calibrated();
   const s = run(c, 4000, (t) => (t > 2000 ? 0.7 : 0), { start: 1600 });
@@ -75,7 +88,7 @@ test('a held tongue scores once, however long it is held', () => {
 
 test('a signal hovering around the ON threshold does not produce a burst (hysteresis)', () => {
   const c = calibrated();
-  // Baseline sd is floored at 0.05, so ON (4 sd) is ~0.2 and OFF (2 sd) ~0.1; hover between 0.17 and 0.23.
+  // Baseline sd is floored at 0.05, so ON (3 sd) is ~0.15; hover between 0.17 and 0.23 (swings under DROP).
   const s = run(c, 3000, (t) => (t > 2000 ? 0.2 + 0.03 * Math.sin(t / 40) : 0), { start: 1600 });
   assert.ok(s.count <= 1, `expected at most one count, got ${s.count}`);
 });
@@ -86,9 +99,9 @@ test('a single-frame spike is not a flick', () => {
   assert.equal(s.count, 0);
 });
 
-test('fast head movement freezes counting', () => {
+test('a violent head shake freezes counting', () => {
   const c = calibrated();
-  const s = run(c, 3000, flicks(1600, 6, 400, 150), { start: 1600, angular: () => 160 });
+  const s = run(c, 3000, flicks(1600, 6, 400, 150), { start: 1600, angular: () => 300 });
   assert.equal(s.count, 0);
   assert.equal(s.gated, true);
 });

@@ -28,11 +28,11 @@ Licking only needs the tongue to come out over the lips, and colour alone can't 
 3. **Calibration.** While the tongue is in, record where the lower lip sits relative to the chin, in head-local units (eye line = *right*, perpendicular = *down*).
 4. **Counter** (`src/flick-counter.js`, pure and unit-tested). It takes the stronger of the two cues:
    - per-person, per-light calibration while the tongue is in; everything after runs on z-scores against that baseline;
-   - **hysteresis:** a flick starts above ON (4σ) and ends only below OFF (2σ), so noise near a threshold can't burst-count;
+   - **peak/trough hysteresis:** a lick is a rise of 3σ from the lowest point since the last lick (and at least 3σ out); it ends at a 2.5σ fall from its peak, so a half-retracted tongue is enough for the next lick and jitter smaller than that cannot burst-count;
    - counts on the **rising edge only**, so a held tongue scores once;
    - 2-frame confirmation, so single-frame spikes don't count (on a slow phone, one frame longer than 70 ms is enough);
    - 110 ms **refractory** window;
-   - a **motion gate**: head rotation faster than 120°/s (from the facial transformation matrix) freezes counting, so head bobs don't score;
+   - a **motion gate**: head rotation faster than 250°/s (from the facial transformation matrix) freezes counting, so head bobs don't score;
    - the baseline drifts slowly while the tongue is in, following lighting changes during play.
 
 ## Lollipop reactions
@@ -41,9 +41,9 @@ A dent at the contact point that springs back, a damped wobble, a clearcoat "wet
 
 ## Tests
 
-`npm test` runs 27 tests:
+`npm test` runs 29 tests:
 
-- fast trains (4 flicks/s, also at 10 fps), slow licks, a held tongue;
+- fast trains (4 flicks/s, also at 10 fps), slow licks, licking that only half-retracts the tongue, a held tongue with jitter;
 - hovering near the threshold, single-frame spikes;
 - head movement, lost face, slow lighting drift, identical restarts;
 - the mouth-fill cue with closed red lips, a tongue just covering the lips, the mouth open with no tongue, a tongue resting inside the mouth, and the lip landmark dragged onto the tongue;

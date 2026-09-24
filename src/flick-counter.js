@@ -4,23 +4,29 @@
 // Rules (the answer to "count fast flicks without counting a held tongue or head movement"):
 // - Calibrate a per-person, per-lighting baseline for each cue while the tongue is in.
 // - Work in z-scores against that baseline, so dim or warm light only changes the baseline, not the rule.
-// - Hysteresis: a flick starts above ON and only ends below OFF, so noise near one threshold cannot
-//   produce a burst of counts.
+// - Peak/trough hysteresis: a lick is a rise of RISE from the lowest point since the last lick (and
+//   above ON); it ends at a fall of DROP from its peak (or below OFF). Rapid licking rarely pulls the
+//   tongue all the way back in, so a partial retraction must be enough, while noise smaller than
+//   RISE/DROP around any level cannot produce a burst of counts.
 // - Count on the rising edge only: a held tongue stays "out" and scores once.
 // - Refractory window: two counts closer than a real flick can repeat are one flick.
 // - Motion gate: while the head turns faster than a person can flick deliberately, freeze transitions.
 
 export const DEFAULTS = Object.freeze({
   calibrationMs: 1500,
-  onZ: 4, // enter "out" at or above this many baseline deviations
+  onZ: 3, // a lick needs the signal at least this many baseline deviations out...
+  riseZ: 3, // ...and at least this far above the lowest point since the last lick
   offZ: 2, // leave "out" at or below this
+  dropZ: 2.5, // or once the signal falls this far below the lick's peak: a partial retraction is enough
   strongZ: 7, // a single frame this far out counts without waiting for confirmation
   confirmFrames: 2, // otherwise it must hold above ON for this many frames (rejects 1-frame spikes)
   slowFrameMs: 70, // ...or a single frame when frames are this far apart (low fps: one frame is a long look)
   refractoryMs: 110,
-  maxAngularDegPerSec: 120,
+  // The cues are measured in the mouth's own frame, so ordinary head movement while licking does not
+  // fake a lick; only a violent shake (tracking smears) pauses counting.
+  maxAngularDegPerSec: 250,
   baselineTauMs: 8000, // slow baseline drift while the tongue is in (lighting changes during play)
-  // extension is a share of the search area (ON at +0.2); lipDrag is in eye spans (ON at +0.1).
+  // extension is the filled share of the lip gap (ON at +0.15); lipDrag is in eye spans (ON at +0.075).
   stdFloor: Object.freeze({ extension: 0.05, lipDrag: 0.025 }),
 });
 
@@ -55,6 +61,8 @@ export function createFlickCounter(options = {}) {
       pending: 0,
       signal: 0,
       gated: false,
+      trough: 0, // lowest signal since the last lick ended
+      peak: 0, // highest signal during the current lick
       stats: { extension: createStat(), lipDrag: createStat() },
     };
   }
@@ -118,11 +126,13 @@ export function createFlickCounter(options = {}) {
     }
 
     if (s.state === 'in') {
-      if (s.signal >= cfg.onZ) {
+      s.trough = Math.min(s.trough, s.signal);
+      if (s.signal >= cfg.onZ && s.signal - s.trough >= cfg.riseZ) {
         s.pending += 1;
         const confirmed = s.pending >= cfg.confirmFrames || dt >= cfg.slowFrameMs || s.signal >= cfg.strongZ;
         if (confirmed && t - s.lastCountT >= cfg.refractoryMs) {
           s.state = 'out';
+          s.peak = s.signal;
           s.count += 1;
           s.lastCountT = t;
           s.pending = 0;
@@ -132,8 +142,12 @@ export function createFlickCounter(options = {}) {
         s.pending = 0;
         if (s.signal < cfg.offZ) driftBaseline(cues, dt);
       }
-    } else if (s.state === 'out' && s.signal <= cfg.offZ) {
-      s.state = 'in';
+    } else if (s.state === 'out') {
+      s.peak = Math.max(s.peak, s.signal);
+      if (s.signal <= cfg.offZ || s.peak - s.signal >= cfg.dropZ) {
+        s.state = 'in';
+        s.trough = s.signal;
+      }
     }
     return snapshot(flick);
   }
