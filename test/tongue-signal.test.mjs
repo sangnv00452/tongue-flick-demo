@@ -96,6 +96,16 @@ test('closed lips whose tracked inner points sit apart over pink inner lip read 
   assert.ok(out >= ON, `tongue out ${out}`);
 });
 
+test('a calibration caught with the mouth half open corrects itself once the lips close', () => {
+  const t = createTongueTracker();
+  for (let i = 0; i < 10; i++) t.calibrate(face({ jaw: 12 })); // replay started mid-laugh
+  // With the mouth half open as the "closed" reference, a lick at the same opening reads nothing...
+  assert.equal(t.measure(face({ jaw: 12 }), image({ jaw: 12, tongueTo: 230 })).extension, 0);
+  // ...until the lips close once; after that the same lick is seen.
+  t.measure(face(), image());
+  assert.ok(t.measure(face({ jaw: 12 }), image({ jaw: 12, tongueTo: 230 })).extension >= ON);
+});
+
 test('a tongue that just covers the lips (the licking case) crosses ON', () => {
   const t = calibratedTracker();
   const r = rise(t, face({ jaw: 10 }), image({ jaw: 10, tongueTo: 226 }));

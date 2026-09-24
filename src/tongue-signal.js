@@ -139,6 +139,9 @@ export function createTongueTracker(options = {}) {
       const u0 = Math.min(cr, cl);
       const u1 = Math.max(cr, cl);
       const gap = bottom - top;
+      // The closed gap only ever narrows: if calibration caught the mouth half open (a replay started
+      // mid-laugh), the first time the lips really close fixes it instead of blocking every lick.
+      if (cal && gap < cal.gap) cal.gap = gap;
       const region = [fromLocal(u0, top, chin, f), fromLocal(u1, top, chin, f), fromLocal(u1, bottom, chin, f), fromLocal(u0, bottom, chin, f)];
       const lipLine = cal ? [fromLocal(u0, cal.inner, chin, f), fromLocal(u1, cal.inner, chin, f)] : [region[3], region[2]];
       const samples = [];

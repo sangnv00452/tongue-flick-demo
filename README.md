@@ -35,13 +35,21 @@ Licking only needs the tongue to come out over the lips, and colour alone can't 
    - a **motion gate**: head rotation faster than 250°/s (from the facial transformation matrix) freezes counting, so head bobs don't score;
    - the baseline drifts slowly while the tongue is in, following lighting changes during play.
 
+## Reaching the candy
+
+The candy stays still; the player brings their mouth to it. A lick only scores when the centre of the lip gap is within tongue's reach of the candy's edge on screen: 0.7 eye spans, so it scales with how close the face is to the camera (`src/reach.js`).
+- **In reach:** a green ring around the candy, and "+1" after each scored lick.
+- **Too far:** a dashed grey ring, "Too far", and a prompt to bring the mouth to the candy.
+
+Calibration waits 1.2 s after Start or Play again so the mouth can settle, and the calibrated closed-lip gap only ever narrows, so a replay that starts mid-laugh corrects itself the first time the lips close.
+
 ## Lollipop reactions
 
 A dent at the contact point that springs back, a damped wobble, a clearcoat "wetness" that dries over time, and the candy wearing down with each lick. All of it is dt-based with no per-frame allocation (`src/lollipop.js`).
 
 ## Tests
 
-`npm test` runs 29 tests:
+`npm test` runs 34 tests:
 
 - fast trains (4 flicks/s, also at 10 fps), slow licks, licking that only half-retracts the tongue, a held tongue with jitter;
 - hovering near the threshold, single-frame spikes;
