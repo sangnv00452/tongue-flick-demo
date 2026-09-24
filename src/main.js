@@ -43,7 +43,7 @@ const ui = {
 };
 
 // ---------- game state machine: menu -> loading -> calibrating -> playing -> results -> (restart) calibrating
-const game = { state: 'menu', startedAt: 0, now: 0, remainingMs: CONFIG.roundMs, score: 0, faceFound: false, cueMode: 'none', error: null };
+const game = { state: 'menu', startedAt: 0, now: 0, remainingMs: CONFIG.roundMs, score: 0, faceFound: false, cueMode: 'none', error: null, delegate: null };
 const counter = createFlickCounter();
 let debugOn = params.has('debug') || SIM;
 let muted = false;
@@ -130,13 +130,22 @@ async function startCamera() {
   ui.status.textContent = 'Loading face tracker…';
   const { FaceLandmarker, FilesetResolver } = await import(`${MP_BASE}/vision_bundle.mjs`);
   const fileset = await FilesetResolver.forVisionTasks(`${MP_BASE}/wasm`);
-  landmarker = await FaceLandmarker.createFromOptions(fileset, {
-    baseOptions: { modelAssetPath: MODEL_URL, delegate: 'GPU' },
+  const options = (delegate) => ({
+    baseOptions: { modelAssetPath: MODEL_URL, delegate },
     runningMode: 'VIDEO',
     numFaces: 1,
     outputFaceBlendshapes: false,
     outputFacialTransformationMatrixes: true,
   });
+  // The GPU delegate is fastest but not available in every browser (older iOS Safari); CPU always works.
+  try {
+    landmarker = await FaceLandmarker.createFromOptions(fileset, options('GPU'));
+    game.delegate = 'GPU';
+  } catch (err) {
+    console.warn('GPU delegate unavailable, using CPU', err);
+    landmarker = await FaceLandmarker.createFromOptions(fileset, options('CPU'));
+    game.delegate = 'CPU';
+  }
   ui.status.textContent = '';
 }
 
@@ -291,7 +300,7 @@ function drawGraph() {
   for (const h of history) if (h.gated) g.fillRect(x(h.t) - 1, c.height - 6, 3, 6);
 
   const s = counter.snapshot();
-  ui.debugText.textContent = `state ${s.state} · z ${s.signal.toFixed(1)} (on ${onZ} / off ${offZ}) · ${s.gated ? 'HEAD MOVING: paused' : `head ${Math.round(head.angularVel)}°/s`} · cues: ${game.cueMode}`;
+  ui.debugText.textContent = `state ${s.state} · z ${s.signal.toFixed(1)} (on ${onZ} / off ${offZ}) · ${s.gated ? 'HEAD MOVING: paused' : `head ${Math.round(head.angularVel)}°/s`} · cues: ${game.cueMode}${game.delegate ? ` · ${game.delegate}` : ''}`;
 }
 
 // ---------- main loop
