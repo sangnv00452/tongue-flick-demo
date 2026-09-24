@@ -4,7 +4,7 @@
 import * as THREE from 'three';
 import { createFlickCounter } from './flick-counter.js';
 import { createLollipop } from './lollipop.js';
-import { extensionCue, headAngles, headFrame, lipChinCue, LM } from './tongue-signal.js';
+import { createTongueTracker, headAngles, LM } from './tongue-signal.js';
 
 const MP_VERSION = '1.0.1';
 const MP_BASE = `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${MP_VERSION}`;
@@ -53,6 +53,7 @@ function setState(next) {
   document.body.dataset.state = next;
   if (next === 'calibrating') {
     counter.reset();
+    tracker.reset();
     lollipop.reset();
     game.score = 0;
     game.remainingMs = CONFIG.roundMs;
@@ -89,11 +90,11 @@ window.addEventListener('resize', resize);
 resize();
 
 const worldPerPx = () => (2 * camera.position.z * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2))) / view.h;
-function placeLollipop(screen, faceScalePx) {
+function placeLollipop(screen, sizePx) {
   const k = worldPerPx();
   const target = new THREE.Vector3((screen.x - view.w / 2) * k, -(screen.y - view.h / 2) * k, 0);
   lollipop.object.position.lerp(target, 0.35);
-  const size = Math.max(0.3, faceScalePx * 0.42 * k);
+  const size = Math.max(0.3, sizePx * 0.42 * k);
   lollipop.object.scale.setScalar(THREE.MathUtils.lerp(lollipop.object.scale.x, size, 0.3));
 }
 
@@ -120,7 +121,9 @@ const sampleCanvas = document.createElement('canvas');
 const sampleCtx = sampleCanvas.getContext('2d', { willReadFrequently: true });
 let lastVideoTime = -1;
 const head = { yaw: 0, pitch: 0, t: 0, angularVel: 0 };
-let lastFace = null; // { screenPts, frame } for drawing and placement
+const tracker = createTongueTracker();
+let lipConnections = []; // FaceLandmarker.FACE_LANDMARKS_LIPS, for drawing the lip outline
+let lastFace = null; // what the tracker saw last frame, in screen pixels, for the overlay
 
 async function startCamera() {
   ui.status.textContent = 'Starting camera…';
@@ -129,6 +132,7 @@ async function startCamera() {
   await ui.video.play();
   ui.status.textContent = 'Loading face tracker…';
   const { FaceLandmarker, FilesetResolver } = await import(`${MP_BASE}/vision_bundle.mjs`);
+  lipConnections = FaceLandmarker.FACE_LANDMARKS_LIPS ?? [];
   const fileset = await FilesetResolver.forVisionTasks(`${MP_BASE}/wasm`);
   const options = (delegate) => ({
     baseOptions: { modelAssetPath: MODEL_URL, delegate },
@@ -181,9 +185,12 @@ function readCameraCues(t) {
     return [img[i], img[i + 1], img[i + 2]];
   };
   const pts = lms.map((p) => ({ x: p.x * w, y: p.y * h }));
-  const extension = extensionCue(pts, sample);
-  const lipChin = lipChinCue(pts);
-  game.cueMode = extension === null ? 'lip only (too dark for colour)' : 'colour + lip';
+  // While the counter calibrates (tongue in), learn where this person's lower lip sits above the chin.
+  const counterState = counter.snapshot().state;
+  if (counterState === 'waiting' || counterState === 'calibrating') tracker.calibrate(pts);
+  const m0 = tracker.measure(pts, sample);
+  const extension = m0.extension;
+  game.cueMode = extension === null ? 'too dark to see colour' : 'colour';
 
   const m = res.facialTransformationMatrixes?.[0]?.data;
   if (m) {
@@ -194,9 +201,15 @@ function readCameraCues(t) {
     Object.assign(head, a, { t });
   }
 
-  const screenPts = lms.map(toScreen);
-  lastFace = { screenPts, frame: headFrame(screenPts) };
-  return { faceFound: true, cues: { extension, lipChin }, angularVel: head.angularVel };
+  const fromSample = (p) => toScreen({ x: p.x / w, y: p.y / h });
+  lastFace = {
+    screenPts: lms.map(toScreen),
+    region: m0.region.map(fromSample),
+    lipLine: m0.lipLine.map(fromSample),
+    samples: m0.samples.map((s) => ({ ...fromSample(s), kind: s.kind })),
+    extension,
+  };
+  return { faceFound: true, cues: { extension }, angularVel: head.angularVel };
 }
 
 // ---------- simulation input
@@ -204,7 +217,7 @@ const sim = { tongueOut: false, headTurning: false };
 function readSimCues() {
   game.cueMode = 'simulated';
   const noise = (Math.random() - 0.5) * 0.02;
-  return { faceFound: true, cues: { extension: (sim.tongueOut ? 0.7 : 0) + noise, lipChin: -0.35 + noise * 0.1 }, angularVel: sim.headTurning ? 150 : 0 };
+  return { faceFound: true, cues: { extension: (sim.tongueOut ? 0.7 : 0) + noise }, angularVel: sim.headTurning ? 150 : 0 };
 }
 
 // ---------- per-frame step (shared by the real loop and advanceTime)
@@ -229,11 +242,8 @@ function step(t, dt) {
     if (game.remainingMs === 0) setState('results');
   }
 
-  if (lastFace && !SIM) {
-    const { screenPts, frame: f } = lastFace;
-    const lip = screenPts[LM.lowerOuter];
-    placeLollipop({ x: lip.x + f.down.x * f.scale * 0.9, y: lip.y + f.down.y * f.scale * 0.9 }, f.scale);
-  } else placeLollipop({ x: view.w / 2, y: view.h * 0.62 }, Math.min(view.w, view.h) * 0.35);
+  // The candy stays put, low and centred, clear of the face: the player flicks toward it.
+  placeLollipop({ x: view.w / 2, y: view.h * 0.8 }, Math.min(view.w, view.h) * 0.3);
   lollipop.update(dt / 1000);
 }
 
@@ -255,20 +265,58 @@ function renderHud() {
 function drawOverlay() {
   const g = ui.overlay.getContext('2d');
   g.clearRect(0, 0, view.w, view.h);
-  if (!debugOn || !lastFace) return;
-  const { screenPts, frame: f } = lastFace;
-  g.fillStyle = 'rgba(0,255,200,0.9)';
-  for (const i of [LM.eyeOuterR, LM.eyeOuterL, LM.upperInner, LM.lowerInner, LM.lowerOuter, LM.chin, LM.cheekR, LM.cheekL]) {
-    g.fillRect(screenPts[i].x - 2, screenPts[i].y - 2, 4, 4);
-  }
-  const a = screenPts[LM.lowerInner];
-  const reach = Math.hypot(screenPts[LM.chin].x - a.x, screenPts[LM.chin].y - a.y) * 0.9;
-  g.strokeStyle = 'rgba(255,80,120,0.9)';
-  g.lineWidth = 2;
+  if (!lastFace) return;
+  const { screenPts, region, lipLine, samples, extension } = lastFace;
+  const out = counter.snapshot().state === 'out';
+
+  // Face mesh: every landmark as a faint dot.
+  g.fillStyle = 'rgba(120,230,255,0.45)';
+  for (const p of screenPts) g.fillRect(p.x - 1, p.y - 1, 2, 2);
+
+  // Lip outline.
+  g.strokeStyle = 'rgba(255,255,255,0.85)';
+  g.lineWidth = 1.5;
   g.beginPath();
-  g.moveTo(a.x, a.y);
-  g.lineTo(a.x + f.down.x * reach, a.y + f.down.y * reach);
+  for (const { start, end } of lipConnections) {
+    g.moveTo(screenPts[start].x, screenPts[start].y);
+    g.lineTo(screenPts[end].x, screenPts[end].y);
+  }
   g.stroke();
+
+  // Where the tongue is looked for: below the calibrated lip line, filled when the tongue is out.
+  g.beginPath();
+  region.forEach((p, i) => (i ? g.lineTo(p.x, p.y) : g.moveTo(p.x, p.y)));
+  g.closePath();
+  g.fillStyle = out ? 'rgba(255,60,120,0.28)' : 'rgba(255,255,255,0.06)';
+  g.fill();
+  g.strokeStyle = out ? '#ff3c78' : 'rgba(255,255,255,0.6)';
+  g.lineWidth = 2;
+  g.stroke();
+  g.setLineDash([6, 4]);
+  g.strokeStyle = '#ffd166';
+  g.beginPath();
+  g.moveTo(lipLine[0].x, lipLine[0].y);
+  g.lineTo(lipLine[1].x, lipLine[1].y);
+  g.stroke();
+  g.setLineDash([]);
+
+  // Each sample, coloured by what it saw.
+  const colour = { tongue: '#ff3c78', skin: 'rgba(255,255,255,0.7)', dark: '#555' };
+  for (const s of samples) {
+    g.fillStyle = colour[s.kind];
+    g.beginPath();
+    g.arc(s.x, s.y, 3, 0, Math.PI * 2);
+    g.fill();
+  }
+
+  // Verdict next to the region.
+  const label = extension === null ? 'too dark' : `${out ? 'TONGUE OUT' : 'tongue in'} · ${Math.round(extension * 100)}%`;
+  g.font = '600 15px system-ui, sans-serif';
+  g.fillStyle = out ? '#ff3c78' : '#fff';
+  g.shadowColor = '#000';
+  g.shadowBlur = 4;
+  g.fillText(label, Math.max(region[1].x, region[2].x) + 10, (region[1].y + region[2].y) / 2);
+  g.shadowBlur = 0;
 }
 
 function drawGraph() {

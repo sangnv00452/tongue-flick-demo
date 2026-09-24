@@ -16,11 +16,15 @@ export const DEFAULTS = Object.freeze({
   offZ: 2, // leave "out" at or below this
   strongZ: 7, // a single frame this far out counts without waiting for confirmation
   confirmFrames: 2, // otherwise it must hold above ON for this many frames (rejects 1-frame spikes)
+  slowFrameMs: 70, // ...or a single frame when frames are this far apart (low fps: one frame is a long look)
   refractoryMs: 110,
-  maxAngularDegPerSec: 90,
+  maxAngularDegPerSec: 120,
   baselineTauMs: 8000, // slow baseline drift while the tongue is in (lighting changes during play)
-  stdFloor: Object.freeze({ extension: 0.03, lipChin: 0.006 }),
+  // Extension moves in sixths (rows of the search grid); a 0.05 floor puts ON at two rows past the lip.
+  stdFloor: Object.freeze({ extension: 0.05 }),
 });
+
+const CUES = ['extension'];
 
 function createStat() {
   return { n: 0, mean: 0, m2: 0 };
@@ -51,7 +55,7 @@ export function createFlickCounter(options = {}) {
       pending: 0,
       signal: 0,
       gated: false,
-      stats: { extension: createStat(), lipChin: createStat() },
+      stats: { extension: createStat() },
     };
   }
   reset();
@@ -59,7 +63,7 @@ export function createFlickCounter(options = {}) {
   /** z-score of the strongest available cue; cues oriented so that larger means "more tongue". */
   function zOf(cues) {
     let z = -Infinity;
-    for (const key of ['extension', 'lipChin']) {
+    for (const key of CUES) {
       const x = cues[key];
       if (x === null || x === undefined || Number.isNaN(x)) continue;
       const st = s.stats[key];
@@ -70,7 +74,7 @@ export function createFlickCounter(options = {}) {
 
   function driftBaseline(cues, dt) {
     const a = Math.min(1, dt / cfg.baselineTauMs);
-    for (const key of ['extension', 'lipChin']) {
+    for (const key of CUES) {
       const x = cues[key];
       if (x === null || x === undefined || Number.isNaN(x)) continue;
       s.stats[key].mean += a * (x - s.stats[key].mean);
@@ -78,7 +82,7 @@ export function createFlickCounter(options = {}) {
   }
 
   /**
-   * One frame. `t` in ms, `cues` = { extension, lipChin } (null when unmeasurable, e.g. too dark),
+   * One frame. `t` in ms, `cues` = { extension } (null when unmeasurable, e.g. too dark),
    * `angularVel` in deg/s, `faceFound` false when the tracker lost the face.
    * Returns { state, count, signal, gated, flick } where `flick` is true on the frame a flick is counted.
    */
@@ -96,7 +100,7 @@ export function createFlickCounter(options = {}) {
     if (s.state === 'waiting') s.state = 'calibrating';
 
     if (s.state === 'calibrating') {
-      for (const key of ['extension', 'lipChin']) {
+      for (const key of CUES) {
         const x = cues[key];
         if (x !== null && x !== undefined && !Number.isNaN(x)) push(s.stats[key], x);
       }
@@ -116,7 +120,7 @@ export function createFlickCounter(options = {}) {
     if (s.state === 'in') {
       if (s.signal >= cfg.onZ) {
         s.pending += 1;
-        const confirmed = s.pending >= cfg.confirmFrames || s.signal >= cfg.strongZ;
+        const confirmed = s.pending >= cfg.confirmFrames || dt >= cfg.slowFrameMs || s.signal >= cfg.strongZ;
         if (confirmed && t - s.lastCountT >= cfg.refractoryMs) {
           s.state = 'out';
           s.count += 1;

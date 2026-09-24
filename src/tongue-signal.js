@@ -1,12 +1,15 @@
-// Turns face landmarks plus the camera frame into the two cues the flick counter reads.
-// MediaPipe's face blendshapes have no tongue output (there is no `tongueOut` in tasks-vision), so the
-// tongue is measured directly:
-//   extension: how far tongue-coloured pixels run past the lower lip toward the chin, measured along
-//              the head's own down axis and relative to the cheek colour in the same frame (so warm
-//              or dim light shifts both and cancels out);
-//   lipChin:   how far the tracked lower lip is pushed toward the chin, relative to the nose-to-chin
-//              length (a protruding tongue drags the lower-lip landmarks down; nodding scales both).
-// Pure functions: points are pixel coordinates, pixels come from a sampler callback.
+// Measures how far the tongue sticks out, from face landmarks plus the camera frame.
+// MediaPipe's face blendshapes have no tongue output (tasks-vision has no `tongueOut`), so the tongue
+// is found in pixels:
+//   - During calibration (tongue in) we record where the lower lip sits relative to the chin, in the
+//     head's own frame. Lip and chin both ride on the jaw, so that offset holds when the mouth opens.
+//   - Each frame we look at the chin skin just below that expected lip line. Opening the mouth moves
+//     the region with the jaw; a tongue resting inside the mouth is above it; only a tongue that sticks
+//     out over the lower lip covers it. (The tracked lower-lip landmarks themselves are not trusted
+//     while the tongue is out: the tracker drags them onto the tongue.)
+//   - Colour is judged as chromaticity against the cheeks in the same frame, so warm or dim light
+//     shifts both sides and cancels out; pixels below a darkness floor are ignored.
+// Pure: points are pixel coordinates, pixels come from a sampler callback.
 
 export const LM = Object.freeze({
   forehead: 10,
@@ -22,8 +25,6 @@ export const LM = Object.freeze({
 });
 
 const sub = (a, b) => ({ x: a.x - b.x, y: a.y - b.y });
-const add = (a, b) => ({ x: a.x + b.x, y: a.y + b.y });
-const mul = (a, k) => ({ x: a.x * k, y: a.y * k });
 const len = (a) => Math.hypot(a.x, a.y);
 const dist = (a, b) => len(sub(a, b));
 const norm = (a) => {
@@ -36,8 +37,18 @@ export function headFrame(pts) {
   const right = norm(sub(pts[LM.eyeOuterL], pts[LM.eyeOuterR]));
   let down = { x: -right.y, y: right.x };
   const toChin = sub(pts[LM.chin], pts[LM.forehead]);
-  if (down.x * toChin.x + down.y * toChin.y < 0) down = mul(down, -1);
+  if (down.x * toChin.x + down.y * toChin.y < 0) down = { x: -down.x, y: -down.y };
   return { right, down, scale: dist(pts[LM.eyeOuterL], pts[LM.eyeOuterR]) };
+}
+
+/** Point -> (u, v) in eye spans, relative to `origin`: u along `right`, v along `down`. */
+export function toLocal(p, origin, f) {
+  const d = sub(p, origin);
+  return { u: (d.x * f.right.x + d.y * f.right.y) / f.scale, v: (d.x * f.down.x + d.y * f.down.y) / f.scale };
+}
+
+export function fromLocal(u, v, origin, f) {
+  return { x: origin.x + (f.right.x * u + f.down.x * v) * f.scale, y: origin.y + (f.right.y * u + f.down.y * v) * f.scale };
 }
 
 /** Chromaticity is brightness-independent: r/(r+g+b), g/(r+g+b), plus luma for a darkness floor. */
@@ -47,77 +58,97 @@ export function chroma([r, g, b]) {
 }
 
 export const SIGNAL_DEFAULTS = Object.freeze({
-  steps: 24, // samples along the down axis from the lower inner lip toward the chin
-  bandPoints: 5, // samples across each step, averaged
-  bandSpacing: 0.06, // across-step spacing, in eye spans
-  reachOfChin: 0.9, // how far toward the chin to look
+  rows: 6, // search grid below the expected lip line
+  cols: 7,
+  halfWidth: 0.22, // in eye spans, each side of the midline
+  topMargin: 0.04, // start this far below the expected lip line
+  depth: 0.6, // search this share of the lip-to-chin distance
+  rowCovered: 0.4, // a row is "tongue" when this share of its samples look like tongue
   redDelta: 0.03, // tongue must be this much redder than cheek skin (chromaticity)
   greenDelta: -0.015, // and this much less green
   lumaFloor: 0.07, // darker pixels are sensor noise, not colour
-  minValidRatio: 0.5, // below this share of usable pixels the extension cue is reported as unknown
+  minValidRatio: 0.5, // below this share of usable samples the cue reports unknown
 });
 
-function average(samples) {
+function averageChroma(samples) {
   const n = samples.length || 1;
   return samples.reduce((acc, c) => ({ r: acc.r + c.r / n, g: acc.g + c.g / n, luma: acc.luma + c.luma / n }), { r: 0, g: 0, luma: 0 });
 }
 
-function patch(sample, center, frame, radius) {
+/** Cheek colour in this frame: the reference the chin region is compared against. */
+export function skinReference(pts, sample, f) {
   const out = [];
-  for (let i = -1; i <= 1; i++) for (let j = -1; j <= 1; j++) out.push(chroma(sample(center.x + i * radius * frame.scale, center.y + j * radius * frame.scale)));
-  return out;
+  for (const i of [LM.cheekR, LM.cheekL])
+    for (let a = -1; a <= 1; a++) for (let b = -1; b <= 1; b++) out.push(chroma(sample(pts[i].x + a * 0.05 * f.scale, pts[i].y + b * 0.05 * f.scale)));
+  return averageChroma(out);
 }
 
-/** Cheek colour in this frame: the reference the mouth region is compared against. */
-export function skinReference(pts, sample, frame) {
-  return average([...patch(sample, pts[LM.cheekR], frame, 0.05), ...patch(sample, pts[LM.cheekL], frame, 0.05)]);
-}
+export function createTongueTracker(options = {}) {
+  const o = { ...SIGNAL_DEFAULTS, ...options };
+  let offsets = [];
+  let lip = null; // calibrated lower-lip position relative to the chin, in head-local units
 
-/**
- * 0 (tongue in) .. 1 (tongue reaches the chin), or null when the light is too poor to tell.
- * `sample(x, y)` returns [r, g, b] 0..255 for a pixel coordinate.
- */
-export function extensionCue(pts, sample, opts = {}) {
-  const o = { ...SIGNAL_DEFAULTS, ...opts };
-  const frame = headFrame(pts);
-  const skin = skinReference(pts, sample, frame);
-  if (skin.luma < o.lumaFloor) return null;
+  return {
+    reset() {
+      offsets = [];
+      lip = null;
+    },
+    /** Call on calibration frames (tongue in). */
+    calibrate(pts) {
+      const f = headFrame(pts);
+      offsets.push(toLocal(pts[LM.lowerOuter], pts[LM.chin], f));
+      const us = offsets.map((p) => p.u).sort((a, b) => a - b);
+      const vs = offsets.map((p) => p.v).sort((a, b) => a - b);
+      const mid = Math.floor(offsets.length / 2);
+      lip = { u: us[mid], v: vs[mid] };
+    },
+    get calibrated() {
+      return lip !== null;
+    },
+    /**
+     * { extension: 0..1 or null when too dark, rowsCovered, samples: [{x, y, kind}] for drawing,
+     *   region: 4 corner points, lipLine: [a, b] } — all points in the sampler's pixel coordinates.
+     */
+    measure(pts, sample) {
+      const f = headFrame(pts);
+      const chin = pts[LM.chin];
+      const lipAt = lip ?? toLocal(pts[LM.lowerOuter], chin, f);
+      const top = lipAt.v + o.topMargin;
+      const bottom = lipAt.v + Math.abs(lipAt.v) * o.depth;
+      const skin = skinReference(pts, sample, f);
+      const samples = [];
+      const region = [fromLocal(lipAt.u - o.halfWidth, top, chin, f), fromLocal(lipAt.u + o.halfWidth, top, chin, f), fromLocal(lipAt.u + o.halfWidth, bottom, chin, f), fromLocal(lipAt.u - o.halfWidth, bottom, chin, f)];
+      const lipLine = [fromLocal(lipAt.u - o.halfWidth, lipAt.v, chin, f), fromLocal(lipAt.u + o.halfWidth, lipAt.v, chin, f)];
+      if (skin.luma < o.lumaFloor) return { extension: null, rowsCovered: 0, samples, region, lipLine };
 
-  const start = pts[LM.lowerInner];
-  const reach = dist(start, pts[LM.chin]) * o.reachOfChin;
-  if (reach <= 0) return null;
-  const lipEnd = Math.min(0.95, dist(start, pts[LM.lowerOuter]) / reach);
-
-  let run = 0;
-  let misses = 0;
-  let usable = 0;
-  for (let i = 0; i < o.steps; i++) {
-    const at = add(start, mul(frame.down, (reach * (i + 0.5)) / o.steps));
-    const band = [];
-    for (let k = 0; k < o.bandPoints; k++) {
-      const offset = (k - (o.bandPoints - 1) / 2) * o.bandSpacing * frame.scale;
-      const c = chroma(sample(at.x + frame.right.x * offset, at.y + frame.right.y * offset));
-      if (c.luma >= o.lumaFloor) band.push(c);
-    }
-    if (band.length) usable++;
-    const c = average(band);
-    const tongueLike = band.length > 0 && c.r - skin.r >= o.redDelta && c.g - skin.g <= o.greenDelta;
-    if (misses < 2) {
-      if (tongueLike) {
-        run = i + 1;
-        misses = 0;
-      } else misses++;
-    }
-  }
-  if (usable / o.steps < o.minValidRatio) return null;
-  const reached = run / o.steps;
-  return Math.max(0, Math.min(1, (reached - lipEnd) / (1 - lipEnd)));
-}
-
-/** Larger when the lower lip is pushed toward the chin; unit-free, so head distance and nodding cancel. */
-export function lipChinCue(pts) {
-  const noseChin = dist(pts[LM.nose], pts[LM.chin]);
-  return noseChin > 0 ? -dist(pts[LM.lowerOuter], pts[LM.chin]) / noseChin : null;
+      let usable = 0;
+      let rowsCovered = 0;
+      let stillHanging = true; // a sticking-out tongue hangs from the lip: count covered rows from the top only
+      for (let r = 0; r < o.rows; r++) {
+        const v = top + ((bottom - top) * (r + 0.5)) / o.rows;
+        let tongueInRow = 0;
+        let usableInRow = 0;
+        for (let c = 0; c < o.cols; c++) {
+          const u = lipAt.u - o.halfWidth + (2 * o.halfWidth * (c + 0.5)) / o.cols;
+          const p = fromLocal(u, v, chin, f);
+          const px = chroma(sample(p.x, p.y));
+          let kind = 'dark';
+          if (px.luma >= o.lumaFloor) {
+            usableInRow++;
+            const isTongue = px.r - skin.r >= o.redDelta && px.g - skin.g <= o.greenDelta;
+            kind = isTongue ? 'tongue' : 'skin';
+            if (isTongue) tongueInRow++;
+          }
+          samples.push({ x: p.x, y: p.y, kind });
+        }
+        usable += usableInRow;
+        if (stillHanging && usableInRow && tongueInRow / usableInRow >= o.rowCovered) rowsCovered++;
+        else stillHanging = false;
+      }
+      const extension = usable / (o.rows * o.cols) < o.minValidRatio ? null : rowsCovered / o.rows;
+      return { extension, rowsCovered, samples, region, lipLine };
+    },
+  };
 }
 
 /** Yaw and pitch in degrees from MediaPipe's column-major 4x4 facial transformation matrix. */

@@ -17,12 +17,12 @@ function rng(seed) {
 }
 
 /** Runs frames through a counter. `ext(ms)` gives the extension cue at time ms; noise is added. */
-function run(counter, ms, ext, { seed = 1, start = 0, angular = () => 0, face = () => true } = {}) {
+function run(counter, ms, ext, { seed = 1, start = 0, angular = () => 0, face = () => true, frame = FRAME } = {}) {
   const r = rng(seed);
   let last;
-  for (let t = start; t < start + ms; t += FRAME) {
+  for (let t = start; t < start + ms; t += frame) {
     const noise = (r() - 0.5) * 0.04;
-    last = counter.update({ t, cues: { extension: ext(t) + noise, lipChin: -0.35 + noise * 0.1 }, angularVel: angular(t), faceFound: face(t) });
+    last = counter.update({ t, cues: { extension: ext(t) + noise }, angularVel: angular(t), faceFound: face(t) });
   }
   return last;
 }
@@ -53,6 +53,13 @@ test('counts every flick of a fast train (4 per second, 130 ms out)', () => {
   assert.equal(s.count, 10);
 });
 
+test('still counts fast flicks when the phone only manages 10 frames a second', () => {
+  const c = createFlickCounter();
+  run(c, 1600, () => 0, { frame: 100 });
+  const s = run(c, 3000, flicks(1600, 8, 300, 150), { start: 1600, frame: 100 });
+  assert.equal(s.count, 8);
+});
+
 test('counts slow deliberate licks one each', () => {
   const c = calibrated();
   const s = run(c, 6000, flicks(1600, 4, 1400, 600), { start: 1600 });
@@ -68,8 +75,8 @@ test('a held tongue scores once, however long it is held', () => {
 
 test('a signal hovering around the ON threshold does not produce a burst (hysteresis)', () => {
   const c = calibrated();
-  // Baseline sd is floored at 0.03, so ON (4 sd) is ~0.12 and OFF (2 sd) ~0.06; hover between 0.10 and 0.16.
-  const s = run(c, 3000, (t) => (t > 2000 ? 0.13 + 0.03 * Math.sin(t / 40) : 0), { start: 1600 });
+  // Baseline sd is floored at 0.05, so ON (4 sd) is ~0.2 and OFF (2 sd) ~0.1; hover between 0.17 and 0.23.
+  const s = run(c, 3000, (t) => (t > 2000 ? 0.2 + 0.03 * Math.sin(t / 40) : 0), { start: 1600 });
   assert.ok(s.count <= 1, `expected at most one count, got ${s.count}`);
 });
 
