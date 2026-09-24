@@ -258,7 +258,7 @@ function renderHud() {
   ui.hint.textContent =
     game.state === 'calibrating'
       ? game.faceFound
-        ? `Keep your tongue in… ${Math.round(snap.calibration * 100)}%`
+        ? `Close your mouth… ${Math.round(snap.calibration * 100)}%`
         : 'Face the camera'
       : game.state === 'playing' && !game.faceFound
         ? 'Face lost: counting paused'

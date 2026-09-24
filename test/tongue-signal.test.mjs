@@ -77,6 +77,25 @@ test('closed lips read zero: there is no gap for a tongue to fill, however red t
   assert.ok(m.gap < 0.04);
 });
 
+test('closed lips whose tracked inner points sit apart over pink inner lip read zero (seen on the phone)', () => {
+  // The tracker leaves 7 px (0.07 eye spans) between the inner-lip points with the mouth shut, and the
+  // inner lip there is as pink as a tongue: before calibrating the closed gap this read 20-40% fill.
+  const shut = (o = {}) => {
+    const pts = face(o);
+    pts[LM.lowerInner] = { x: pts[LM.lowerInner].x, y: pts[LM.lowerInner].y + 7 };
+    return pts;
+  };
+  const pinkSeam = (o = {}) => {
+    const base = image(o);
+    return (x, y) => (y > 202 && y < 209 && Math.abs(x - 150) < 24 && !o.jaw ? [132, 93, 100] : base(x, y));
+  };
+  const t = createTongueTracker();
+  for (let i = 0; i < 10; i++) t.calibrate(shut());
+  assert.equal(t.measure(shut(), pinkSeam()).extension, 0);
+  const out = t.measure(shut({ jaw: 12 }), pinkSeam({ jaw: 12, tongueTo: 230 })).extension;
+  assert.ok(out >= ON, `tongue out ${out}`);
+});
+
 test('a tongue that just covers the lips (the licking case) crosses ON', () => {
   const t = calibratedTracker();
   const r = rise(t, face({ jaw: 10 }), image({ jaw: 10, tongueTo: 226 }));

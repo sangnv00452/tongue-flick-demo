@@ -74,7 +74,7 @@ export const SIGNAL_DEFAULTS = Object.freeze({
   rows: 4, // samples across the gap between the inner lips
   cols: 7, // samples along it, corner to corner
   inset: 0.15, // keep this share of the gap and the width clear at each edge (lip edges are red too)
-  minGap: 0.04, // lips closer than this (in eye spans) are closed: nothing can be in between
+  minGap: 0.04, // the gap must be this much wider (eye spans) than the calibrated closed gap to count as open
   pinkerThanSkin: 0.035, // tongue b-g must exceed the cheeks' b-g by this (lips +0.02-0.03, tongue +0.04-0.09 measured)
   minRedOverGreen: 0.05, // and r-g at least this (tongue +0.07-0.12, teeth ~+0.02)
   lumaFloor: 0.07, // darker pixels are sensor noise, not colour
@@ -111,8 +111,9 @@ export function createTongueTracker(options = {}) {
     calibrate(pts) {
       const f = headFrame(pts);
       const chin = pts[LM.chin];
-      seen.push({ outer: toLocal(pts[LM.lowerOuter], chin, f).v, inner: toLocal(pts[LM.lowerInner], chin, f).v });
-      cal = { outer: median(seen.map((s) => s.outer)), inner: median(seen.map((s) => s.inner)) };
+      const inner = toLocal(pts[LM.lowerInner], chin, f).v;
+      seen.push({ outer: toLocal(pts[LM.lowerOuter], chin, f).v, inner, gap: inner - toLocal(pts[LM.upperInner], chin, f).v });
+      cal = { outer: median(seen.map((s) => s.outer)), inner: median(seen.map((s) => s.inner)), gap: median(seen.map((s) => s.gap)) };
     },
     get calibrated() {
       return cal !== null;
@@ -144,7 +145,10 @@ export function createTongueTracker(options = {}) {
 
       const skin = skinReference(pts, sample, f);
       if (skin.luma < o.lumaFloor) return { extension: null, lipDrag, gap, samples, region, lipLine };
-      if (gap < o.minGap) return { extension: 0, lipDrag, gap, samples, region, lipLine };
+      // Closed lips still leave a small gap between the tracked inner-lip points, and the inner lip is
+      // pink like a tongue (measured: 20-40% "fill" with the mouth shut). So the mouth only counts as
+      // open once the gap is wider than this person's calibrated closed gap by minGap.
+      if (gap - (cal ? cal.gap : 0) < o.minGap) return { extension: 0, lipDrag, gap, samples, region, lipLine };
 
       let usable = 0;
       let tongue = 0;
