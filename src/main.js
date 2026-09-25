@@ -48,7 +48,7 @@ const ui = {
 };
 
 // ---------- game state machine: menu -> loading -> calibrating -> playing -> results -> (restart) calibrating
-const game = { state: 'menu', startedAt: 0, now: 0, remainingMs: CONFIG.roundMs, score: 0, faceFound: false, cueMode: 'none', error: null, delegate: null, readyUntil: 0, touch: null, lickOpen: false, lastLickAt: null, lastMissAt: null };
+const game = { state: 'menu', startedAt: 0, now: 0, remainingMs: CONFIG.roundMs, score: 0, faceFound: false, cueMode: 'none', error: null, delegate: null, readyUntil: 0, touch: null, lickOpen: false, lickSawTongue: false, lastLickAt: null, lastMissAt: null };
 const counter = createFlickCounter();
 let debugOn = params.has('debug') || SIM;
 let muted = false;
@@ -65,6 +65,7 @@ function setState(next) {
     game.readyUntil = game.now + CONFIG.readyMs;
     game.touch = null;
     game.lickOpen = false;
+    history.length = 0;
   }
   if (next === 'playing') game.startedAt = game.now;
   if (next === 'results') ui.finalScore.textContent = String(game.score);
@@ -91,8 +92,12 @@ function resize() {
   renderer.setSize(view.w, view.h, false);
   camera.aspect = view.w / view.h;
   camera.updateProjectionMatrix();
-  ui.overlay.width = view.w;
-  ui.overlay.height = view.h;
+  // The overlay is drawn in CSS px but backed at device resolution, so dots and text stay sharp on
+  // 2x/3x screens.
+  const dpr = Math.min(3, window.devicePixelRatio || 1);
+  ui.overlay.width = Math.round(view.w * dpr);
+  ui.overlay.height = Math.round(view.h * dpr);
+  ui.overlay.getContext('2d').setTransform(dpr, 0, 0, dpr, 0, 0);
 }
 window.addEventListener('resize', resize);
 resize();
@@ -249,7 +254,13 @@ function step(t, dt) {
     if (game.state === 'playing') {
       // A lick scores once, if the tongue touches the candy at any moment while it is out; a lick that
       // ends without touching is a miss.
-      if (r.flick) game.lickOpen = true;
+      if (r.flick) {
+        game.lickOpen = true;
+        game.lickSawTongue = false;
+      }
+      // "Missed" only for a lick where a tongue was actually seen: the lip-drag cue alone can fire on
+      // lip jitter, and that should not nag the player.
+      if (game.lickOpen) game.lickSawTongue ||= SIM ? sim.tongueOut : (lastFace?.blob.length ?? 0) > 0;
       if (game.lickOpen && game.touch.touching) {
         game.lickOpen = false;
         game.score += 1;
@@ -258,7 +269,7 @@ function step(t, dt) {
         pop();
       } else if (game.lickOpen && r.state === 'in') {
         game.lickOpen = false;
-        game.lastMissAt = t;
+        if (game.lickSawTongue) game.lastMissAt = t;
       }
     }
   }

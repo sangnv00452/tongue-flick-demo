@@ -210,8 +210,9 @@ export function tongueBlob(seeds, mouth, eyeSpan, sample, skin, o = SIGNAL_DEFAU
     queue.push([gx, gy]);
   };
   for (const s of seeds) push(Math.round(s.x / step), Math.round(s.y / step));
-  while (queue.length && out.length < o.blobMaxPoints) {
-    const [gx, gy] = queue.shift();
+  // Read the queue by index: shift() would move the whole array on every step (quadratic per frame).
+  for (let head = 0; head < queue.length && out.length < o.blobMaxPoints; head++) {
+    const [gx, gy] = queue[head];
     push(gx + 1, gy);
     push(gx - 1, gy);
     push(gx, gy + 1);
