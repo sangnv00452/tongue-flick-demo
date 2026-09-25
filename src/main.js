@@ -4,7 +4,8 @@
 import * as THREE from 'three';
 import { createFlickCounter } from './flick-counter.js';
 import { createLollipop } from './lollipop.js';
-import { touchesCandy } from './reach.js';
+import { createLickCounter } from './lick-counter.js';
+import { tongueVsCandy } from './reach.js';
 import { createTongueTracker, headAngles, LM } from './tongue-signal.js';
 
 const MP_VERSION = '1.0.1';
@@ -48,7 +49,8 @@ const ui = {
 };
 
 // ---------- game state machine: menu -> loading -> calibrating -> playing -> results -> (restart) calibrating
-const game = { state: 'menu', startedAt: 0, now: 0, remainingMs: CONFIG.roundMs, score: 0, faceFound: false, cueMode: 'none', error: null, delegate: null, readyUntil: 0, touch: null, lickOpen: false, lickSawTongue: false, lastLickAt: null, lastMissAt: null };
+const game = { state: 'menu', startedAt: 0, now: 0, remainingMs: CONFIG.roundMs, score: 0, faceFound: false, cueMode: 'none', error: null, delegate: null, readyUntil: 0, tongue: null, touching: false, tongueOut: false, lastLickAt: null };
+const licks = createLickCounter();
 const counter = createFlickCounter();
 let debugOn = params.has('debug') || SIM;
 let muted = false;
@@ -63,8 +65,10 @@ function setState(next) {
     game.score = 0;
     game.remainingMs = CONFIG.roundMs;
     game.readyUntil = game.now + CONFIG.readyMs;
-    game.touch = null;
-    game.lickOpen = false;
+    game.tongue = null;
+    game.touching = false;
+    licks.reset();
+    game.tongueOut = false;
     history.length = 0;
   }
   if (next === 'playing') game.startedAt = game.now;
@@ -245,31 +249,26 @@ function step(t, dt) {
   const candy = candyOnScreen();
   if (frame) {
     game.faceFound = frame.faceFound;
-    // In sim mode "touching" is a switch; with a camera it is the detected tongue shape entering the candy.
-    game.touch = SIM ? { touching: sim.tongueOut && !sim.farFromCandy, distance: 0 } : touchesCandy(lastFace?.blob ?? [], candy);
+    // The tongue against the candy: in sim mode a switch, with a camera the detected tongue shape.
+    game.tongue = SIM
+      ? { points: sim.tongueOut ? 20 : 0, inside: sim.tongueOut && !sim.farFromCandy ? 20 : 0 }
+      : { points: lastFace?.blob.length ?? 0, inside: tongueVsCandy(lastFace?.blob ?? [], candy).inside };
+    // The flick counter only drives calibration and the tongue-out label; it does not score.
     const r = counter.update({ t, cues: frame.cues, angularVel: frame.angularVel, faceFound: frame.faceFound });
     history.push({ t, z: r.signal, flick: r.flick, gated: r.gated });
     while (history.length && history[0].t < t - CONFIG.graphSeconds * 1000) history.shift();
     if (game.state === 'calibrating' && r.state === 'in') setState('playing');
-    if (game.state === 'playing') {
-      // A lick scores once, if the tongue touches the candy at any moment while it is out; a lick that
-      // ends without touching is a miss.
-      if (r.flick) {
-        game.lickOpen = true;
-        game.lickSawTongue = false;
-      }
-      // "Missed" only for a lick where a tongue was actually seen: the lip-drag cue alone can fire on
-      // lip jitter, and that should not nag the player.
-      if (game.lickOpen) game.lickSawTongue ||= SIM ? sim.tongueOut : (lastFace?.blob.length ?? 0) > 0;
-      if (game.lickOpen && game.touch.touching) {
-        game.lickOpen = false;
-        game.score += 1;
+    // Scoring: one lick = the tongue coming out and touching the candy (see lick-counter.js). While the
+    // face is lost the state is held, so a face that reappears with the tongue still out is not a new lick.
+    if (game.state === 'playing' && frame.faceFound) {
+      const c = licks.update({ t, tonguePoints: game.tongue.points, pointsInside: game.tongue.inside });
+      game.touching = c.touching;
+      game.tongueOut = c.out;
+      if (c.lick) {
+        game.score = c.count;
         game.lastLickAt = t;
         lollipop.lick();
         pop();
-      } else if (game.lickOpen && r.state === 'in') {
-        game.lickOpen = false;
-        if (game.lickSawTongue) game.lastMissAt = t;
       }
     }
   }
@@ -303,7 +302,7 @@ function renderHud() {
         : 'Face the camera'
       : game.state === 'playing' && !game.faceFound
         ? 'Face lost: counting paused'
-        : game.state === 'playing' && game.now - (game.lastMissAt ?? -Infinity) < 1500
+        : game.state === 'playing' && game.score === 0 && game.now - game.startedAt < 4000
           ? 'Touch the candy with your tongue'
           : '';
 }
@@ -371,34 +370,32 @@ function drawOverlay() {
 }
 
 /**
- * Around the candy: a ring that turns green while the tongue touches it, then "+1" rising after a
- * scored lick or "Missed" after a lick that never touched the candy.
+ * Around the candy, a ring with three states: green while the tongue touches it, yellow while a tongue
+ * is seen but not touching, dashed grey when no tongue is seen. "+1" rises after each lick.
  */
 function drawLickFeedback() {
   const g = ui.overlay.getContext('2d');
   const candy = candyOnScreen();
   if (game.state === 'playing') {
-    const near = game.touch?.touching;
-    g.strokeStyle = near ? 'rgba(6,214,160,0.9)' : 'rgba(255,255,255,0.35)';
-    g.lineWidth = near ? 4 : 2;
-    g.setLineDash(near ? [] : [8, 8]);
+    const [colour, width, dash] = game.touching ? ['rgba(6,214,160,0.95)', 4, []] : game.tongueOut ? ['rgba(255,209,102,0.9)', 3, []] : ['rgba(255,255,255,0.35)', 2, [8, 8]];
+    g.strokeStyle = colour;
+    g.lineWidth = width;
+    g.setLineDash(dash);
     g.beginPath();
     g.arc(candy.x, candy.y, candy.r + 10, 0, Math.PI * 2);
     g.stroke();
     g.setLineDash([]);
   }
-  const lickAge = game.now - (game.lastLickAt ?? -Infinity);
-  const missAge = game.now - (game.lastMissAt ?? -Infinity);
-  const [age, text, colour] = lickAge <= missAge ? [lickAge, '+1', '#ffd166'] : [missAge, 'Missed', '#c8cbe0'];
+  const age = game.now - (game.lastLickAt ?? -Infinity);
   if (age > 500) return;
   const k = age / 500;
   g.globalAlpha = 1 - k;
-  g.font = `800 ${text === '+1' ? 44 : 28}px system-ui, sans-serif`;
+  g.font = '800 44px system-ui, sans-serif';
   g.textAlign = 'center';
-  g.fillStyle = colour;
+  g.fillStyle = '#ffd166';
   g.shadowColor = '#000';
   g.shadowBlur = 8;
-  g.fillText(text, candy.x, candy.y - candy.r - 24 - k * 50);
+  g.fillText('+1', candy.x, candy.y - candy.r - 24 - k * 50);
   g.shadowBlur = 0;
   g.textAlign = 'start';
   g.globalAlpha = 1;
@@ -520,7 +517,7 @@ requestAnimationFrame(frame);
 
 // ---------- test hooks (see README): deterministic stepping and a text view of the state
 window.render_game_to_text = () =>
-  JSON.stringify({ state: game.state, score: game.score, remainingMs: Math.round(game.remainingMs), counter: counter.snapshot(), lollipop: lollipop.state(), sim: SIM, faceFound: game.faceFound, touching: game.touch?.touching ?? null });
+  JSON.stringify({ state: game.state, score: game.score, remainingMs: Math.round(game.remainingMs), counter: counter.snapshot(), lollipop: lollipop.state(), sim: SIM, faceFound: game.faceFound, touching: game.touching, tongueOut: game.tongueOut, licks: licks.snapshot().count });
 window.advanceTime = (ms) => {
   manualClock = true;
   for (let t = 0; t < ms; t += CONFIG.simStepMs) step(game.now + CONFIG.simStepMs, CONFIG.simStepMs);

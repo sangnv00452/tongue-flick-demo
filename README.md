@@ -8,7 +8,7 @@ A front-camera party-game prototype: flick your tongue at a 3D lollipop as fast 
 - **See the signal:** press **Signal** (or add `?debug=1`) for the live threshold graph.
 - **Check on a photo:** `dev/face-check.html?img=<face photo URL>` runs the real tracker on a portrait, once with the tongue in and once with a painted tongue.
 
-## How flicks are counted
+## How the tongue is detected
 
 MediaPipe's face blendshapes have **no tongue output**, so the tongue is measured directly, in the head's own frame (`src/tongue-signal.js`):
 
@@ -28,7 +28,7 @@ Licking only needs the tongue to come out over the lips. Two cues:
 3. **Calibration.** With the mouth closed, record where the lower lip sits relative to the chin, in head-local units (eye line = *right*, perpendicular = *down*), and how far apart the tracked inner-lip points sit.
    - Closed lips still leave a small gap between those points, and the inner lip is as pink as a tongue. So the mouth only counts as open once the gap is wider than that closed gap.
    - The closed gap only ever narrows during play.
-4. **Counter** (`src/flick-counter.js`, pure and unit-tested). It takes the stronger of the two cues:
+4. **Tongue in/out** (`src/flick-counter.js`, pure and unit-tested). It drives calibration and the "TONGUE OUT" label, **not the score** (see below). It takes the stronger of the two cues:
    - per-person, per-light calibration while the tongue is in; everything after runs on z-scores against that baseline;
    - **peak/trough hysteresis:** a lick is a rise of 3σ from the lowest point since the last lick (and at least 3σ out); it ends at a 2.5σ fall from its peak, so a half-retracted tongue is enough for the next lick and jitter smaller than that cannot burst-count;
    - counts on the **rising edge only**, so a held tongue scores once;
@@ -41,9 +41,17 @@ Licking only needs the tongue to come out over the lips. Two cues:
 
 The candy stays still; the player brings their mouth to it and licks. A lick scores only if **the tongue itself touches the candy**:
 - **Tongue shape.** Flood-fill tongue-coloured pixels outward from the tongue samples found between the lips, on a grid of 0.04 eye spans, up to 1.3 eye spans from the mouth (`tongueBlob` in `src/tongue-signal.js`). A tongue out over the lips is one connected pink area, so the fill follows it to its tip wherever it points, and stops at the skin and lips around it.
-- **Touch.** Some point of that shape lies inside the candy's circle on screen (`src/reach.js`). The tongue and the candy are compared in the same screen pixels, so this holds on any screen size.
-- **Scoring.** A lick scores once if the tongue touches the candy at any moment while it is out. A lick that ends without touching, while a tongue shape was seen, is a miss; lip-landmark jitter alone never shows a miss.
-- **On screen.** The tongue shape is drawn as pink dots. The ring around the candy turns green while the tongue touches it. Each scored lick shows "+1"; a miss shows "Missed" and a prompt to touch the candy with the tongue.
+- **Touch.** Count the tongue-shape points inside the candy's circle on screen (`src/reach.js`). The tongue and the candy are compared in the same screen pixels, so this holds on any screen size.
+- **Scoring: one lick = the tongue comes out and touches the candy** (`src/lick-counter.js`, pure and unit-tested):
+  - Out and in follow the tongue shape itself: out = at least 3 tongue points on two frames in a row; in = no tongue shape for 90 ms. The shape dropping out for a frame or two does not split a lick, but fast licking (4 per second) still counts every one.
+  - Each time the tongue comes out it scores at most once, the first time it touches the candy. Pulling it back in and out again with the mouth right at the candy scores again every time.
+  - Holding the tongue on the candy, or sliding it off and back on without pulling it in, is one lick.
+  - A tongue already out when the round starts does not score; it has to go in and come out again.
+  - Touching needs at least 3 tongue points inside the candy on two frames in a row, so a stray point or a one-frame flicker is not a lick.
+  - While the face is lost the state is held, so a face that reappears with the tongue still out is not a new lick.
+- **On screen.** The tongue shape is drawn as pink dots. The ring around the candy is green while the tongue touches it, yellow while the tongue is out but not touching, and dashed grey when the tongue is in. Each lick shows "+1".
+
+**Why scoring does not use the in/out cue counter.** An earlier version scored rises and falls of the mouth-fill cue with a touch during them. A tongue resting on the candy that moved slightly then scored again and again. A version that scored each new contact missed the opposite case: with the mouth right at the candy, the tongue never leaves the candy circle, so out-in-out was one contact. Counting out-episodes of the tongue shape that touch the candy covers both.
 
 Calibration waits 1.2 s after Start or Play again so the mouth can settle, and the calibrated closed-lip gap only ever narrows, so a replay that starts mid-laugh corrects itself the first time the lips close.
 
@@ -53,7 +61,10 @@ A dent at the contact point that springs back, a damped wobble, a clearcoat "wet
 
 ## Tests
 
-`npm test` runs 36 tests:
+`npm test` runs 47 tests:
+
+- lick scoring: every out-and-touch counts, including out and in with the mouth at the candy; a held tongue or sliding on the candy counts once; a tongue already out at the start, a tongue that does not reach, stray points and one-frame blips do not count; fast licking, 10 fps, reset;
+- tongue points inside the candy on screen;
 
 - fast trains (4 flicks/s, also at 10 fps), slow licks, licking that only half-retracts the tongue, a held tongue with jitter;
 - hovering near the threshold, single-frame spikes;
