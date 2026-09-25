@@ -14,6 +14,8 @@ function run(c, ms, tongue, { inside = tongue, contact = () => null, start = 0, 
   return last;
 }
 
+const outFrom = (from) => (t) => (t >= from ? 20 : 0);
+
 /** Deterministic noise in [-1, 1]. */
 const noise = (t) => Math.sin(t * 12.9898) * 43758.5453 % 1;
 
@@ -49,11 +51,40 @@ test('holding the tongue on the candy scores once', () => {
   assert.equal(s.touching, true);
 });
 
-test('touching the candy again without pulling the tongue in is not a new flick', () => {
+test('the tongue coming back onto the candy after leaving it is a new lick, without pulling it in', () => {
   const c = createLickCounter();
   const tongue = (t) => (t > 300 ? 20 : 0);
+  // On the candy 600-900, 1200-1500, ... 3600-3900 ms: 6 touches (the first is the flick).
   const inside = (t) => (t > 300 && Math.floor(t / 300) % 2 === 0 ? 20 : 0);
-  assert.equal(run(c, 4000, tongue, { inside }).count, 1);
+  assert.equal(run(c, 4000, tongue, { inside }).count, 6);
+});
+
+/** Licks from the middle of the candy out past its edge: on the candy `onMs` sweeping out, then off for `offMs`. */
+const outwardLicks = (from, n, onMs, offMs) => {
+  const phase = (t) => (t - from) % (onMs + offMs);
+  const active = (t) => t >= from && Math.floor((t - from) / (onMs + offMs)) < n;
+  return {
+    inside: (t) => (active(t) && phase(t) < onMs ? 20 : 0),
+    contact: (t) => (active(t) && phase(t) < onMs ? { x: 0, y: 0.9 * (phase(t) / onMs) } : null),
+  };
+};
+
+test('licking from inside the candy out past its edge, again and again, counts every lick', () => {
+  const c = createLickCounter();
+  const { inside, contact } = outwardLicks(300, 5, 250, 200);
+  assert.equal(run(c, 3000, () => 20, { inside, contact }).count, 5);
+});
+
+test('a slow lick from inside out past the edge is still one lick, not a touch plus a stroke', () => {
+  const c = createLickCounter();
+  const { inside, contact } = outwardLicks(300, 4, 450, 250);
+  assert.equal(run(c, 3500, () => 20, { inside, contact }).count, 4);
+});
+
+test('a tongue resting at the candy edge, flickering in and out of it, is one lick', () => {
+  const c = createLickCounter();
+  const inside = (t) => (t > 300 && Math.floor(t / FRAME) % 9 >= 2 ? 20 : 0);
+  assert.equal(run(c, 4000, outFrom(300), { inside }).count, 1);
 });
 
 test('a tongue already out when counting starts does not score until it goes in and comes out again', () => {
@@ -89,8 +120,6 @@ test('a slow phone (10 fps) still counts every lick', () => {
   const c = createLickCounter();
   assert.equal(run(c, 4000, cycles(300, 6, 250, 300), { frame: 100 }).count, 6);
 });
-
-const outFrom = (from) => (t) => (t >= from ? 20 : 0);
 
 test('wiping the tongue back and forth on the candy scores each stroke', () => {
   const c = createLickCounter();

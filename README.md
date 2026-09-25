@@ -42,19 +42,27 @@ Licking only needs the tongue to come out over the lips. Two cues:
 The candy stays still; the player brings their mouth to it and licks. A lick scores only if **the tongue itself touches the candy**:
 - **Tongue shape.** Flood-fill tongue-coloured pixels outward from the tongue samples found between the lips, on a grid of 0.04 eye spans, up to 1.3 eye spans from the mouth (`tongueBlob` in `src/tongue-signal.js`). A tongue out over the lips is one connected pink area, so the fill follows it to its tip wherever it points, and stops at the skin and lips around it.
 - **Touch.** Count the tongue-shape points inside the candy's circle on screen (`src/reach.js`). The tongue and the candy are compared in the same screen pixels, so this holds on any screen size.
-- **Scoring: two kinds of lick** (`src/lick-counter.js`, pure and unit-tested):
+- **Scoring: three kinds of lick** (`src/lick-counter.js`, pure and unit-tested):
   - **Flick:** the tongue comes out and touches the candy. Each time the tongue comes out it flicks at most once, the first time it touches the candy. Pulling it back in and out again with the mouth right at the candy scores again every time.
+  - **Touch:** the tongue, still out, comes back onto the candy after being off it for 150 ms. Licking from inside the candy out past its edge, again and again, counts every lick. A touch that drops for less than that (the tongue shape flickering at the edge) is the same touch.
   - **Stroke:** the tongue moves across the candy while touching it. The touch point is the centre of the tongue points inside the candy, in candy radii, so a stroke is the same on any screen size. A stroke scores when that point has moved 0.4 candy radii. One long sweep in one direction is one stroke; wiping back and forth scores each way.
+  - A sweep straight on from a flick or touch (within 0.5 s of landing) is part of that lick, so one slow lick from inside out past the edge scores once, not twice.
   - Holding the tongue still on the candy scores nothing more. The touch point is smoothed (60 ms) against tracking jitter.
   - The first 150 ms after the tongue lands on the candy are not measured for strokes, because the touch point shifts while the tongue pushes in.
   - Licks are at least 200 ms apart (5 a second at most), so jitter can never run up the score.
   - Out and in follow the tongue shape itself: out = at least 3 tongue points on two frames in a row; in = no tongue shape for 90 ms. The shape dropping out for a frame or two does not split a lick, but fast licking (4 per second) still counts every one.
-  - A tongue already out when the round starts does not flick; it has to go in and come out again. Its strokes still count.
+  - A tongue already out and on the candy when the round starts does not score; it has to leave the candy or go in first. Its strokes still count.
   - Touching needs at least 3 tongue points inside the candy on two frames in a row, so a stray point or a one-frame flicker is not a lick.
   - While the face is lost the state is held, so a face that reappears with the tongue still out is not a new lick.
-- **On screen.** The tongue shape is drawn as pink dots. The ring around the candy is green while the tongue touches it, yellow while the tongue is out but not touching, and dashed grey when the tongue is in. A white dot marks where the tongue touches the candy. Each lick shows "+1".
+- **On screen.** The tongue shape is drawn as pink dots. The ring around the candy is green while the tongue touches it, yellow while the tongue is out but not touching, and dashed grey when the tongue is in. A white dot marks where the tongue touches the candy. Each lick shows "+1" and its kind (flick, touch, stroke).
 
-**Why scoring does not use the in/out cue counter.** An earlier version scored rises and falls of the mouth-fill cue with a touch during them. A tongue resting on the candy that moved slightly then scored again and again. A version that scored each new contact missed the opposite case: with the mouth right at the candy, the tongue never leaves the candy circle, so out-in-out was one contact. Counting out-episodes of the tongue shape that touch the candy covers both, and strokes add the licking that happens without the tongue going back in.
+**Why scoring does not use the in/out cue counter.** An earlier version scored rises and falls of the mouth-fill cue with a touch during them. A tongue resting on the candy that moved slightly then scored again and again. A version that scored each new contact missed the opposite case: with the mouth right at the candy, the tongue never leaves the candy circle, so out-in-out was one contact. Counting out-episodes of the tongue shape that touch the candy covers both; touches and strokes add the licking that happens without the tongue going back in.
+
+## Test logs
+
+Every round is recorded frame by frame (`src/test-log.js`): tongue points, points inside the candy, the touch point, the mouth centre and the tongue tip in candy radii, the mouth-fill cue, the counter's state and each lick's kind.
+- On the results screen, **Copy test log** copies it as text and **Share test log** shares it as a file (AirDrop, Files, a chat app; a download on desktop). A 20 s round is about 25 KB.
+- `node dev/replay-log.mjs <log> [--timeline] [--strokeLen=0.3 --releaseMs=120 ...]` prints the recorded licks, replays the frames through the lick counter with any options changed, and with `--timeline` shows what the tracker saw every 100 ms. A counting problem found on a phone can be reproduced and a fix tried on the same frames.
 
 Calibration waits 1.2 s after Start or Play again so the mouth can settle, and the calibrated closed-lip gap only ever narrows, so a replay that starts mid-laugh corrects itself the first time the lips close.
 
@@ -64,10 +72,11 @@ A dent at the contact point that springs back, a damped wobble, a clearcoat "wet
 
 ## Tests
 
-`npm test` runs 54 tests:
+`npm test` runs 60 tests:
 
-- lick scoring: every out-and-touch counts, including out and in with the mouth at the candy; a held tongue counts once, even with jitter; each stroke of a back-and-forth wipe counts, a long one-way sweep counts once, the tongue pushing in as it lands does not; a tongue already out at the start scores strokes but not a flick; a tongue that does not reach, stray points and one-frame blips do not count; never more than 5 a second; fast licking, 10 fps, reset;
+- lick scoring: every out-and-touch counts, including out and in with the mouth at the candy; coming back onto the candy after leaving it counts, including licks from inside the candy out past its edge, fast or slow; a tongue flickering at the edge counts once; a held tongue counts once, even with jitter; each stroke of a back-and-forth wipe counts, a long one-way sweep counts once, the tongue pushing in as it lands does not; a tongue already out at the start scores strokes but not a flick; a tongue that does not reach, stray points and one-frame blips do not count; never more than 5 a second; fast licking, 10 fps, reset;
 - tongue points inside the candy on screen and where they touch it, the same on any screen size;
+- test logs read back the same, including when pasted with other text or Windows line ends;
 
 - fast trains (4 flicks/s, also at 10 fps), slow licks, licking that only half-retracts the tongue, a held tongue with jitter;
 - hovering near the threshold, single-frame spikes;

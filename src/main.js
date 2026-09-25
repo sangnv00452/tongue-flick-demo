@@ -6,6 +6,7 @@ import { createFlickCounter } from './flick-counter.js';
 import { createLollipop } from './lollipop.js';
 import { createLickCounter } from './lick-counter.js';
 import { tongueVsCandy } from './reach.js';
+import { createTestLog } from './test-log.js';
 import { createTongueTracker, headAngles, LM } from './tongue-signal.js';
 
 const MP_VERSION = '1.0.1';
@@ -46,11 +47,15 @@ const ui = {
   mute: $('mute'),
   simButton: $('sim-lick'),
   status: $('status'),
+  copyLog: $('copy-log'),
+  shareLog: $('share-log'),
+  logStatus: $('log-status'),
 };
 
 // ---------- game state machine: menu -> loading -> calibrating -> playing -> results -> (restart) calibrating
-const game = { state: 'menu', startedAt: 0, now: 0, remainingMs: CONFIG.roundMs, score: 0, faceFound: false, cueMode: 'none', error: null, delegate: null, readyUntil: 0, tongue: null, touching: false, tongueOut: false, lastLickAt: null };
+const game = { state: 'menu', startedAt: 0, now: 0, remainingMs: CONFIG.roundMs, score: 0, faceFound: false, cueMode: 'none', error: null, delegate: null, readyUntil: 0, tongue: null, touching: false, tongueOut: false, lastLickAt: null, lastLickReason: null };
 const licks = createLickCounter();
+const testLog = createTestLog(); // every round, sent back from the results screen
 const counter = createFlickCounter();
 let debugOn = params.has('debug') || SIM;
 let muted = false;
@@ -71,8 +76,19 @@ function setState(next) {
     game.tongueOut = false;
     history.length = 0;
   }
-  if (next === 'playing') game.startedAt = game.now;
-  if (next === 'results') ui.finalScore.textContent = String(game.score);
+  if (next === 'playing') {
+    game.startedAt = game.now;
+    const candy = candyOnScreen();
+    testLog.begin({
+      at: new Date().toISOString(), sim: SIM, ua: navigator.userAgent,
+      screen: { w: view.w, h: view.h, dpr: window.devicePixelRatio }, candy: { x: candy.x, y: candy.y, r: candy.r },
+      lick: licks.config,
+    });
+  }
+  if (next === 'results') {
+    ui.finalScore.textContent = String(game.score);
+    ui.logStatus.textContent = `Test log: ${testLog.frames} frames`;
+  }
   renderHud();
 }
 
@@ -262,17 +278,21 @@ function step(t, dt) {
     // Scoring: a lick = the tongue coming out onto the candy, or stroking across it (see lick-counter.js).
     // While the face is lost the state is held, so a face that reappears with the tongue still out is not
     // a new lick.
+    let reason = null;
     if (game.state === 'playing' && frame.faceFound) {
       const c = licks.update({ t, tonguePoints: game.tongue.points, pointsInside: game.tongue.inside, contact: game.tongue.contact });
       game.touching = c.touching;
       game.tongueOut = c.out;
       if (c.lick) {
+        reason = c.reason;
         game.score = c.count;
         game.lastLickAt = t;
+        game.lastLickReason = c.reason;
         lollipop.lick();
         pop();
       }
     }
+    if (game.state === 'playing') recordFrame(t, frame.faceFound, candy, reason);
   }
   if (game.state === 'playing') {
     game.remainingMs = Math.max(0, CONFIG.roundMs - (t - game.startedAt));
@@ -282,6 +302,22 @@ function step(t, dt) {
   // The candy stays put; the player brings their mouth to it.
   placeLollipop(candy, candy.sizePx);
   lollipop.update(dt / 1000);
+}
+
+/** One frame of the test log: what the tracker saw against the candy, in candy radii, and what was counted. */
+function recordFrame(t, faceFound, candy, reason) {
+  const toCandy = (p) => (p ? { x: (p.x - candy.x) / candy.r, y: (p.y - candy.y) / candy.r } : null);
+  const pts = lastFace?.screenPts;
+  const mouth = SIM || !pts ? null : { x: (pts[LM.upperInner].x + pts[LM.lowerInner].x) / 2, y: (pts[LM.upperInner].y + pts[LM.lowerInner].y) / 2 };
+  let tip = null;
+  if (mouth) for (const p of lastFace.blob) if (!tip || Math.hypot(p.x - mouth.x, p.y - mouth.y) > Math.hypot(tip.x - mouth.x, tip.y - mouth.y)) tip = p;
+  const m = toCandy(mouth);
+  const tp = toCandy(tip);
+  testLog.frame({
+    t: t - game.startedAt, face: faceFound, pts: game.tongue?.points, in: game.tongue?.inside,
+    cx: game.tongue?.contact?.x, cy: game.tongue?.contact?.y, mx: m?.x, my: m?.y, tx: tp?.x, ty: tp?.y,
+    r: candy.r, fill: SIM ? null : lastFace?.extension, out: game.tongueOut, touch: game.touching, lick: reason,
+  });
 }
 
 /** Where the candy is on screen: its centre and radius in px (it wears down as it is licked). */
@@ -407,6 +443,9 @@ function drawLickFeedback() {
   g.shadowColor = '#000';
   g.shadowBlur = 8;
   g.fillText('+1', candy.x, candy.y - candy.r - 24 - k * 50);
+  // Which kind of lick it was (flick, touch, stroke), so a tester can tell what the game counted.
+  g.font = '700 16px system-ui, sans-serif';
+  g.fillText(game.lastLickReason ?? '', candy.x, candy.y - candy.r - 4 - k * 50);
   g.shadowBlur = 0;
   g.textAlign = 'start';
   g.globalAlpha = 1;
@@ -513,6 +552,38 @@ document.addEventListener('visibilitychange', () => {
   if (document.hidden) audio?.suspend();
   else audio?.resume();
 });
+// The last round's test log: copied as text, or shared as a file (AirDrop, Files, a chat app).
+const logName = () => `tongue-flick-log-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.txt`;
+ui.copyLog.addEventListener('click', async () => {
+  const text = testLog.text();
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch {
+    const area = Object.assign(document.createElement('textarea'), { value: text });
+    document.body.append(area);
+    area.select();
+    document.execCommand('copy');
+    area.remove();
+  }
+  ui.logStatus.textContent = `Copied ${testLog.frames} frames (${Math.round(text.length / 1024)} KB)`;
+});
+ui.shareLog.addEventListener('click', async () => {
+  const file = new File([testLog.text()], logName(), { type: 'text/plain' });
+  if (navigator.canShare?.({ files: [file] })) {
+    try {
+      await navigator.share({ files: [file], title: 'Tongue Flick test log' });
+      ui.logStatus.textContent = 'Shared';
+    } catch (e) {
+      if (e.name !== 'AbortError') ui.logStatus.textContent = `Could not share: ${e.message}`;
+    }
+    return;
+  }
+  const a = Object.assign(document.createElement('a'), { href: URL.createObjectURL(file), download: file.name });
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  ui.logStatus.textContent = `Saved ${file.name}`;
+});
+
 if (SIM) {
   const set = (v) => () => (sim.tongueOut = v);
   window.addEventListener('keydown', (e) => e.code === 'Space' && !e.repeat && set(true)());
@@ -544,4 +615,5 @@ window.advanceTime = (ms) => {
   return window.render_game_to_text();
 };
 window.__sim = sim;
+window.__testLog = () => testLog.text();
 window.__GAME_READY__ = true;

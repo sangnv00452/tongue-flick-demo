@@ -26,6 +26,8 @@
       button.ghost { background: rgba(255, 255, 255, 0.14); }
       body[data-state='menu'] #menu, body[data-state='results'] #results { display: grid; }
       #final-score { font-size: 72px; font-weight: 800; }
+      .log-tools { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin-top: 16px; }
+      .card #log-status { margin: 8px 0 0; font-size: 14px; min-height: 1.2em; }
       .tools { position: fixed; right: 16px; bottom: max(16px, env(safe-area-inset-bottom)); display: flex; gap: 8px; }
       #debug { position: fixed; left: 16px; bottom: max(16px, env(safe-area-inset-bottom)); display: none; background: var(--panel); border-radius: 12px; padding: 8px; max-width: calc(100% - 32px); }
       body.debug #debug { display: block; }
@@ -59,6 +61,11 @@
         <p>Licks in 20 seconds</p>
         <div id="final-score">0</div>
         <button id="restart">Play again</button>
+        <div class="log-tools">
+          <button id="copy-log" class="ghost">Copy test log</button>
+          <button id="share-log" class="ghost">Share test log</button>
+        </div>
+        <p id="log-status"></p>
       </div>
     </section>
 
