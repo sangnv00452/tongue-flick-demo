@@ -232,7 +232,7 @@ function readCameraCues(t) {
 }
 
 // ---------- simulation input
-const sim = { tongueOut: false, headTurning: false, farFromCandy: false };
+const sim = { tongueOut: false, headTurning: false, farFromCandy: false, contactX: 0 };
 function readSimCues() {
   game.cueMode = 'simulated';
   const noise = (Math.random() - 0.5) * 0.02;
@@ -250,18 +250,20 @@ function step(t, dt) {
   if (frame) {
     game.faceFound = frame.faceFound;
     // The tongue against the candy: in sim mode a switch, with a camera the detected tongue shape.
+    const onCandy = sim.tongueOut && !sim.farFromCandy;
     game.tongue = SIM
-      ? { points: sim.tongueOut ? 20 : 0, inside: sim.tongueOut && !sim.farFromCandy ? 20 : 0 }
-      : { points: lastFace?.blob.length ?? 0, inside: tongueVsCandy(lastFace?.blob ?? [], candy).inside };
+      ? { points: sim.tongueOut ? 20 : 0, inside: onCandy ? 20 : 0, contact: onCandy ? { x: sim.contactX, y: 0 } : null }
+      : { points: lastFace?.blob.length ?? 0, ...tongueVsCandy(lastFace?.blob ?? [], candy) };
     // The flick counter only drives calibration and the tongue-out label; it does not score.
     const r = counter.update({ t, cues: frame.cues, angularVel: frame.angularVel, faceFound: frame.faceFound });
     history.push({ t, z: r.signal, flick: r.flick, gated: r.gated });
     while (history.length && history[0].t < t - CONFIG.graphSeconds * 1000) history.shift();
     if (game.state === 'calibrating' && r.state === 'in') setState('playing');
-    // Scoring: one lick = the tongue coming out and touching the candy (see lick-counter.js). While the
-    // face is lost the state is held, so a face that reappears with the tongue still out is not a new lick.
+    // Scoring: a lick = the tongue coming out onto the candy, or stroking across it (see lick-counter.js).
+    // While the face is lost the state is held, so a face that reappears with the tongue still out is not
+    // a new lick.
     if (game.state === 'playing' && frame.faceFound) {
-      const c = licks.update({ t, tonguePoints: game.tongue.points, pointsInside: game.tongue.inside });
+      const c = licks.update({ t, tonguePoints: game.tongue.points, pointsInside: game.tongue.inside, contact: game.tongue.contact });
       game.touching = c.touching;
       game.tongueOut = c.out;
       if (c.lick) {
@@ -371,7 +373,8 @@ function drawOverlay() {
 
 /**
  * Around the candy, a ring with three states: green while the tongue touches it, yellow while a tongue
- * is seen but not touching, dashed grey when no tongue is seen. "+1" rises after each lick.
+ * is seen but not touching, dashed grey when no tongue is seen. A white dot marks where the tongue
+ * touches. "+1" rises after each lick.
  */
 function drawLickFeedback() {
   const g = ui.overlay.getContext('2d');
@@ -385,6 +388,14 @@ function drawLickFeedback() {
     g.arc(candy.x, candy.y, candy.r + 10, 0, Math.PI * 2);
     g.stroke();
     g.setLineDash([]);
+    // Where the tongue touches the candy: strokes are measured from this point's movement.
+    const p = game.touching && game.tongue?.contact;
+    if (p) {
+      g.fillStyle = 'rgba(255,255,255,0.9)';
+      g.beginPath();
+      g.arc(candy.x + p.x * candy.r, candy.y + p.y * candy.r, 7, 0, Math.PI * 2);
+      g.fill();
+    }
   }
   const age = game.now - (game.lastLickAt ?? -Infinity);
   if (age > 500) return;
@@ -509,6 +520,15 @@ if (SIM) {
   ui.simButton.addEventListener('pointerdown', set(true));
   ui.simButton.addEventListener('pointerup', set(false));
   ui.simButton.addEventListener('pointerleave', set(false));
+  // Strokes: drag sideways across the button, or the arrow keys, move the tongue across the candy.
+  ui.simButton.addEventListener('pointermove', (e) => {
+    const r = ui.simButton.getBoundingClientRect();
+    sim.contactX = Math.max(-0.8, Math.min(0.8, (e.clientX - r.left) / r.width * 1.6 - 0.8));
+  });
+  window.addEventListener('keydown', (e) => {
+    if (e.code === 'ArrowLeft') sim.contactX = -0.5;
+    if (e.code === 'ArrowRight') sim.contactX = 0.5;
+  });
   document.body.classList.add('sim');
 }
 document.body.classList.toggle('debug', debugOn);
